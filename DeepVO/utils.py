@@ -1,5 +1,6 @@
 import os, time
 import torch
+import torch.nn as nn
 
 
 class MetricLogger:
@@ -83,7 +84,8 @@ def project_warp(src, depth, pose, cam):
     cam_coords *= depth
     # Homogenous transform
     cam_coords = torch.cat(
-        [cam_coords, torch.ones((src.shape[0], 1, *cam_coords.shape[2:]))],
+        [cam_coords, 
+         torch.ones((src.shape[0], 1, *cam_coords.shape[2:]), device=src.device)],
         dim=1)
     
     # p_s = P @ X
@@ -108,8 +110,8 @@ def get_pose_mat(pose_6dof):
     cos_a, sin_a = torch.cos(alpha), torch.sin(alpha)
     cos_b, sin_b = torch.cos(beta), torch.sin(beta)
     cos_g, sin_g = torch.cos(gamma), torch.sin(gamma)
-    zeros = torch.zeros(pose_6dof.shape[0],1,1,1)
-    ones = torch.ones(pose_6dof.shape[0],1,1,1)
+    zeros = torch.zeros((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
+    ones = torch.ones((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
     # Compute yaw, pitch, and roll
     R_z = torch.cat([
         torch.cat([cos_g, -sin_g, zeros], axis=3),
@@ -150,47 +152,81 @@ def get_p_t(src):
 
 def bilinear_sampling(src, p_s):
     ''' Returns a new image by bilinear sampling values from src with indices from p_s. '''
-    height, width = src.shape[2], src.shape[3]
-    p_s = p_s.view(p_s.shape[0], 2, -1)
-
-    # create new 0 array the size of src
-    src = src.squeeze()
-    pred = torch.zeros_like(src)
-
-    tl_alpha = torch.frac(p_s)
-    tl_alpha_h = tl_alpha[:,0]
-    tl_alpha_w = tl_alpha[:,1]
-
-    br = torch.ceil(p_s)
-    br_alpha = br - p_s
-    br_alpha_h = br_alpha[:,0]
-    br_alpha_w = br_alpha[:,1]
-    
-    # Top left indices
-    tl = torch.floor(p_s).to(torch.long).permute(0,2,1)
-    # Mask out of range indices
-    tl_mask = get_out_of_range_mask(height, width, tl)
-    tl_valid = torch.where(tl_mask, tl, 0)
-    tl_h, tl_w = tl_valid[:,:,0], tl_valid[:,:,1] 
-
-    # Bottom right indices
-    br = br.to(torch.long).permute(0,2,1)
-    # Mask out of range indices
-    br_mask = get_out_of_range_mask(height, width, br)
-    br_valid = torch.where(br_mask, br, 0)
-    br_h, br_w = br_valid[:,:,0], br_valid[:,:,1] 
-
-    # tr/bl can be extracted from tl/br
-    tr_h, tr_w = tl_h, br_w 
-    bl_h, bl_w = br_h, tl_w
-
-    for i in range(src.shape[0]):
-        pred[i,tl_h[i],tl_w[i]] += src[i,tl_h[i],tl_w[i]] * tl_alpha_h[i] * tl_alpha_w[i]
-        pred[i,tr_h[i],tr_w[i]] += src[i,tr_h[i],tr_w[i]] * tl_alpha_h[i] * br_alpha_w[i]
-        pred[i,bl_h[i],bl_w[i]] += src[i,bl_h[i],bl_w[i]] * br_alpha_h[i] * tl_alpha_w[i]
-        pred[i,br_h[i],br_w[i]] += src[i,br_h[i],br_w[i]] * br_alpha_h[i] * br_alpha_w[i]
-
+    # grid_sample expects values in [-1,1]
+    p_s = p_s / 128. - 1.
+    pred = nn.functional.grid_sample(
+        src, p_s.permute(0,2,3,1), align_corners=False
+        )
     return pred
+
+    # max_x = torch.tensor(src.shape[3], device=src.device)
+    # max_y = torch.tensor(src.shape[2], device=src.device)
+    # zero = torch.zeros(1, device=src.device)
+
+    # p_sx, p_sy = p_s[:,0], p_s[:,1]
+    # # Create grid indices
+    # p_sx0 = torch.floor(p_sx)
+    # p_sx1 = torch.clip(p_sx0 + 1, zero, max_x-1)
+    # p_sx0 = torch.clip(p_sx0, zero, max_x-1)
+    # p_sy0 = torch.floor(p_sy)
+    # p_sy1 = torch.clip(p_sy0 + 1, zero, max_y-1)
+    # p_sy0 = torch.clip(p_sy0, zero, max_y-1)
+
+    # # value weights
+    # alpha_x0 = p_sx1 - p_sx
+    # alpha_x1 = p_sx - p_sx0
+    # alpha_y0 = p_sy1 - p_sy
+    # alpha_y1 = p_sy - p_sy1
+
+    # flat_x = src.shape[3]
+    # flat_xy = flat_x*src.shape[2]
+
+    # flat_b = torch.range(0, p_s.shape[0], device=p_s.device) * flat_xy
+    # rep = torch.ones((1,p_s.shape[2]*p_s.shape[3]), device=p_s.device)
+    # p_sflat = torch.mm(flat_b.view(-1,1), rep).view(-1).view(p_s.shape[0],1,*p_s.shape[2:])
+    # print(p_sflat.shape)
+
+    #---
+    # p_s = p_s.view(p_s.shape[0], 2, -1)
+
+    # # create new 0 array the size of src
+    # src = src.squeeze()
+    # pred = torch.zeros_like(src)
+
+    # tl_alpha = torch.frac(p_s)
+    # tl_alpha_h = tl_alpha[:,0]
+    # tl_alpha_w = tl_alpha[:,1]
+
+    # br = torch.ceil(p_s)
+    # br_alpha = br - p_s
+    # br_alpha_h = br_alpha[:,0]
+    # br_alpha_w = br_alpha[:,1]
+    
+    # # Top left indices
+    # tl = torch.floor(p_s).to(torch.long).permute(0,2,1)
+    # # Mask out of range indices
+    # tl_mask = get_out_of_range_mask(height, width, tl)
+    # tl_valid = torch.where(tl_mask, tl, 0)
+    # tl_h, tl_w = tl_valid[:,:,0], tl_valid[:,:,1] 
+
+    # # Bottom right indices
+    # br = br.to(torch.long).permute(0,2,1)
+    # # Mask out of range indices
+    # br_mask = get_out_of_range_mask(height, width, br)
+    # br_valid = torch.where(br_mask, br, 0)
+    # br_h, br_w = br_valid[:,:,0], br_valid[:,:,1] 
+
+    # # tr/bl can be extracted from tl/br
+    # tr_h, tr_w = tl_h, br_w 
+    # bl_h, bl_w = br_h, tl_w
+
+    # for i in range(src.shape[0]):
+    #     pred[i,tl_h[i],tl_w[i]] += src[i,tl_h[i],tl_w[i]] * tl_alpha_h[i] * tl_alpha_w[i]
+    #     pred[i,tr_h[i],tr_w[i]] += src[i,tr_h[i],tr_w[i]] * tl_alpha_h[i] * br_alpha_w[i]
+    #     pred[i,bl_h[i],bl_w[i]] += src[i,bl_h[i],bl_w[i]] * br_alpha_h[i] * tl_alpha_w[i]
+    #     pred[i,br_h[i],br_w[i]] += src[i,br_h[i],br_w[i]] * br_alpha_h[i] * br_alpha_w[i]
+
+    # return pred
 
 def get_out_of_range_mask(height, width, grid):
     ''' Returns a mask with the same shape as grid, where: 
@@ -201,7 +237,7 @@ def get_out_of_range_mask(height, width, grid):
     width_mask = (grid[:,:,1:] < width) * (grid[:,:,1:] >= 0) 
     return (height_mask*width_mask).repeat(1,1,2)
 
-def compute_smooth_loss(depth, loss):
+def compute_smooth_loss(depth:torch.Tensor, loss:nn.L1Loss):
     ''' L1 of second order gradients of depth map. '''
     dy = depth[:, :, 1:, :] - depth[:, :, :-1, :]
     dx = depth[:, :, :, 1:] - depth[:, :, :, :-1]
@@ -209,7 +245,7 @@ def compute_smooth_loss(depth, loss):
     dxdx = dx[:, :, :, 1:] - dx[:, :, :, :-1]
     dydy = dy[:, :, 1:, :] - dy[:, :, :-1, :]
     dydx = dy[:, :, :, 1:] - dy[:, :, :, :-1]
-    return  loss(dxdy, torch.zeros_like(dxdy)) + \
-            loss(dxdx, torch.zeros_like(dxdx)) + \
-            loss(dydx, torch.zeros_like(dydx)) + \
-            loss(dydy, torch.zeros_like(dydy))
+    return  loss(dxdy, torch.zeros_like(dxdy, device=depth.device)) + \
+            loss(dxdx, torch.zeros_like(dxdx, device=depth.device)) + \
+            loss(dydx, torch.zeros_like(dydx, device=depth.device)) + \
+            loss(dydy, torch.zeros_like(dydy, device=depth.device))

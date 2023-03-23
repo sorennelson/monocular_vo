@@ -21,10 +21,10 @@ class DepthCNN(nn.Module):
         self.enc4 = EncoderBlock(128, 256, kernel_size=(3,3))
         # 3x512 in paper
         # 2x512 in paper
-        self.dec4 = DecoderBlock(256, 128, kernel_size=(3,3), skip=skip)
-        self.dec3 = DecoderBlock(128, 64, kernel_size=(3,3), skip=skip)
-        self.dec2 = DecoderBlock(64, 32, kernel_size=(3,3), skip=skip)
-        self.dec1 = DecoderBlock(32, 16, kernel_size=(3,3), skip=skip, pad=True)
+        self.dec4 = DecoderBlock(256, 256, 128, kernel_size=(3,3), skip=skip)
+        self.dec3 = DecoderBlock(128, 128, 64, kernel_size=(3,3), skip=skip)
+        self.dec2 = DecoderBlock(64, 64, 32, kernel_size=(3,3), skip=skip)
+        self.dec1 = DecoderBlock(32, 17, 16, kernel_size=(3,3), skip=skip, pad=True)
         self.out = nn.Sequential(
             nn.Conv2d(16, 1, (3,3), 1, padding=1),
             nn.Sigmoid()
@@ -63,7 +63,7 @@ class EncoderBlock(nn.Module):
     
 
 class DecoderBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, skip=False, pad=False):
+    def __init__(self, in_channels, int_channels, out_channels, kernel_size, skip=False, pad=False):
         super().__init__()
         self.skip = skip
         self.conv_transpose = nn.Sequential(OrderedDict([
@@ -71,7 +71,7 @@ class DecoderBlock(nn.Module):
             ('norm', nn.BatchNorm2d(out_channels)),
             ('relu', nn.ReLU(inplace=True))
         ]))
-        channels = out_channels if not skip else out_channels*2
+        channels = out_channels if not skip else int_channels
         padding = 0 if not pad else 1
         self.conv = nn.Sequential(OrderedDict([
             ('conv', nn.Conv2d(channels, out_channels, kernel_size, 1, padding=padding)),

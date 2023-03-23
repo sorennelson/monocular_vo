@@ -12,21 +12,21 @@ parser = argparse.ArgumentParser()
 # Input
 parser.add_argument('--data_path', type=str, 
                     help='Remote/local path where full dataset is persistently stored.')
-parser.add_argument('--data_path_local', type=str, default='/tmp/kitti_vo_stream',
+parser.add_argument('--data_path_local', type=str, default='/tmp/kitti_vo',
                     help='Local working dir where dataset is cached during operation.')
 parser.add_argument('--n_workers', type=int, default=1, help='Number of workers.')
 # Output
 parser.add_argument('--job_id', type=str, help='Job identifier.')
 parser.add_argument('--save_path', type=str, default='./checkpoints/', 
                     help='Path to model saving and logging directory.')
-parser.add_argument('--log_frequency', type=int, default=100, 
+parser.add_argument('--log_frequency', type=int, default=250, 
                     help='Number of batches between logging.')
 # Hyperparameters
 parser.add_argument('--skip', action='store_true', 
                     help='Whether to use skip connections in Depth network.')
 parser.add_argument('--lambda_s', type=float, default=0.5, help='Smooth loss scalar.')
-parser.add_argument('--epochs', type=int, default=2, help='Training epochs.')
-parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
+parser.add_argument('--epochs', type=int, default=10, help='Training epochs.')
+parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
 parser.add_argument('--learning_rate', type=float, default=0.0002, help='Learning rate.')
 parser.add_argument('--decay', type=float, default=0.05, help='Weight decay.')
 args = parser.parse_args()
@@ -38,7 +38,6 @@ def train(data_loader:DataLoader, depth_net:nn.Module, pose_net:nn.Module,
     pose_net.train()
 
     for i, (target, src, cam) in enumerate(data_loader):
-        print(target.shape, src.shape, cam.shape)
         target = target.to(device)
         src = src.to(device)
         cam = cam.to(device)
@@ -91,8 +90,8 @@ def compute_loss(target, src, depth, pose, cam):
 
     # View synthesis loss per source
     view_synth_loss = nn.L1Loss()
-    proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam).unsqueeze(1)
-    proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam).unsqueeze(1)
+    proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam) #.unsqueeze(1)
+    proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam) #.unsqueeze(1)
     l_vs = view_synth_loss(proj_1, target) + view_synth_loss(proj_2, target)
 
     return l_vs + args.lambda_s * l_s
