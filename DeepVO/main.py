@@ -10,8 +10,6 @@ from torch.utils.data import DataLoader
 
 parser = argparse.ArgumentParser()
 # Input
-# data_path = 'https://console.cloud.google.com/storage/browser/kitti_vo_so/kitti_vo_streaming_pil'
-             # https://storage.googleapis.com/kitti_vo_so/kitti_vo_streaming_pil/train/index.json
 parser.add_argument('--data_path', type=str, 
                     help='Remote/local path where full dataset is persistently stored.')
 parser.add_argument('--data_path_local', type=str, default='/tmp/kitti_vo_stream',
@@ -138,7 +136,7 @@ def main():
         logger.start_epoch(epoch)
         train(train_loader, depth_net, pose_net, opt, logger)
         logger.reset_metrics()
-        # validate(test_loader, depth_net, pose_net, logger)
+        validate(test_loader, depth_net, pose_net, logger)
 
 
 if __name__=='__main__':

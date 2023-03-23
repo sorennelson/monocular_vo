@@ -13,17 +13,17 @@ def get_training_data_loaders(remote_path, local_path, batch_size, n_workers):
                               shuffle=True, 
                               batch_size=batch_size, 
                               transforms=train_transforms)
-    # test_data = KittiDataset(f'{remote_path}/val', f'{local_path}/val', 
-    #                          shuffle=False, 
-    #                          batch_size=batch_size, 
-    #                          transforms=test_transforms)
+    test_data = KittiDataset(f'{remote_path}/val', f'{local_path}/val', 
+                             shuffle=False, 
+                             batch_size=batch_size, 
+                             transforms=test_transforms)
     
     train_loader = DataLoader(train_data, batch_size=batch_size, 
                               num_workers=n_workers, pin_memory=True)
-    # test_loader = DataLoader(test_data, batch_size=batch_size,
-    #                          num_workers=n_workers, pin_memory=True)
+    test_loader = DataLoader(test_data, batch_size=batch_size,
+                             num_workers=n_workers, pin_memory=True)
     
-    return train_loader, None #test_loader
+    return train_loader, test_loader
 
 class KittiDataset(StreamingDataset):
     def __init__(self,
