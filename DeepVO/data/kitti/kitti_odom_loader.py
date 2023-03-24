@@ -39,6 +39,18 @@ class kitti_odom_loader(object):
             for n in range(N):
                 self.train_frames.append('%.2d %.6d' % (seq, n))
         self.num_train = len(self.train_frames)
+        self.collect_train_poses()
+        assert len(self.train_poses) == self.num_train
+
+    def collect_train_poses(self):
+        self.train_poses = []
+        for seq in self.train_seqs:
+            with open(os.path.join(self.dataset_dir, 'poses', '%.2d.txt' % seq), 'r') as f:
+                seq_poses = [line.strip().split() for line in f.readlines()]
+                for i in range(len(seq_poses)):
+                    seq_poses[i].insert(0, i)
+                    seq_poses[i].insert(0, seq)
+                self.train_poses.extend(seq_poses)
 
     def is_valid_sample(self, frames, tgt_idx):
         N = len(frames)
@@ -57,6 +69,7 @@ class kitti_odom_loader(object):
     def load_image_sequence(self, frames, tgt_idx, seq_length):
         half_offset = int((seq_length - 1)/2)
         image_seq = []
+        pose_seq = []
         for o in range(-half_offset, half_offset+1):
             curr_idx = tgt_idx + o
             curr_drive, curr_frame_id = frames[curr_idx].split(' ')
@@ -66,11 +79,15 @@ class kitti_odom_loader(object):
                 zoom_x = self.img_width/curr_img.shape[1]
             curr_img = cv2.resize(curr_img, (self.img_width,self.img_height))
             image_seq.append(curr_img)
-        return image_seq, zoom_x, zoom_y
+            pose_seq.append(self.train_poses[curr_idx])
+        return image_seq, zoom_x, zoom_y, pose_seq
 
     def load_example(self, frames, tgt_idx, load_pose=False):
-        image_seq, zoom_x, zoom_y = self.load_image_sequence(frames, tgt_idx, self.seq_length)
+        image_seq, zoom_x, zoom_y, pose_seq = self.load_image_sequence(
+            frames, tgt_idx, self.seq_length
+            )
         tgt_drive, tgt_frame_id = frames[tgt_idx].split(' ')
+
         intrinsics = self.load_intrinsics(tgt_drive, tgt_frame_id)
         intrinsics = self.scale_intrinsics(intrinsics, zoom_x, zoom_y)        
         example = {}
@@ -78,6 +95,7 @@ class kitti_odom_loader(object):
         example['image_seq'] = image_seq
         example['folder_name'] = tgt_drive
         example['file_name'] = tgt_frame_id
+        example['pose_seq'] = pose_seq
         if load_pose:
             pass
         return example

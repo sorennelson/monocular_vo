@@ -47,11 +47,13 @@ class KittiDataset(StreamingDataset):
 
         cam = np.array(obj['cam'].split(',')).reshape(3,3)
         cam = torch.tensor(cam.astype(np.float32))
+
+        pose = self._extract_relative_pose_from_sequence(obj['pose'])
         
         # return self.transforms(x), y
-        return target, src, cam
+        return target, src, cam, pose
     
-    def _unpack_img_sequence(self, seq, width=416):
+    def _unpack_img_sequence(self, seq:torch.Tensor, width=416):
         '''Unpacks images stacked horizontally as [src1,target,src2]. 
         Returns target, [src1,src2] (concatenated along channel dimension).
         '''
@@ -73,3 +75,31 @@ class KittiDataset(StreamingDataset):
 
     def _get_multi_scale_intrinsics(self, intrinsics, num_scales):
         pass
+
+    def _extract_relative_pose_from_sequence(self, pose_seq):
+        pose_seq = pose_seq.split('|')
+        # Unpack global pose (poses are stored as [seq, idx, pose])
+        pose_src1 = np.array(pose_seq[0].split(',')[2:]).reshape(3,4)
+        pose_src1 = torch.tensor(pose_src1.astype(np.float32))
+        R_src1, t_src1 = pose_src1[:,:-1], pose_src1[:,-1:]
+
+        pose_target = np.array(pose_seq[1].split(',')[2:]).reshape(3,4)
+        pose_target = torch.tensor(pose_target.astype(np.float32))
+        R_target, t_target = pose_target[:,:-1], pose_target[:,-1:]
+
+        pose_src2 = np.array(pose_seq[2].split(',')[2:]).reshape(3,4)
+        pose_src2 = torch.tensor(pose_src2.astype(np.float32))
+        R_src2, t_src2 = pose_src2[:,:-1], pose_src2[:,-1:]
+        
+        # Convert to relative pose w.r.t target
+        #   R_target^T @ R_src | R_target^T @ (t_src - t_target)
+        pose_src1_rel = torch.cat([
+            R_src1.T @ R_target, R_src1.T @ (t_target - t_src1)
+            ], dim=1)
+        pose_src2_rel = torch.cat([
+            R_src2.T @ R_target, R_src2.T @ (t_target - t_src2)
+            ], dim=1)
+        
+        return torch.stack([
+            pose_src1_rel, pose_src2_rel
+        ], dim=0)

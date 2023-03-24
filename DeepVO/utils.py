@@ -6,7 +6,7 @@ import torch.nn as nn
 class MetricLogger:
     ''' Helper class for storing metrics and logging. '''
 
-    def __init__(self, save_path, job_id, batch_size, epochs):
+    def __init__(self, save_path:str, job_id:str, batch_size:int, epochs:int):
         self.reset_metrics()
         self.epoch = 0
         self.start = None
@@ -16,7 +16,7 @@ class MetricLogger:
             os.makedirs(os.path.join(save_path, job_id))
         self.log = open(os.path.join(save_path, job_id, 'log.txt'), 'w')
         
-    def start_epoch(self, epoch):
+    def start_epoch(self, epoch:int):
         self.start = time.time()
         self.epoch = epoch
         self.reset_metrics()
@@ -28,10 +28,15 @@ class MetricLogger:
         self.pose_dist = 0.
         self.n_examples = 0
 
-    def update(self, batch_size, loss, pose_dist):
+    def update(self, batch_size:int, loss:float, pose_dist:float):
+        ''' Update with iteration stats. '''
         self.loss += loss*batch_size
         self.pose_dist += pose_dist*batch_size
         self.n_examples += batch_size
+
+    def log_str(self, s: str):
+        self.log.write(f'{s}\n')
+        self.log.flush()
 
     def log_stats(self):
         self.log.write(
@@ -42,7 +47,7 @@ class MetricLogger:
             f'pose dist: {self.pose_dist/self.n_examples:.3f}\n')
         self.log.flush()
     
-    def log_epoch_stats(self, train):
+    def log_epoch_stats(self, train:bool):
         if train:
             epoch_time = time.time() - self.start
             rem_time = epoch_time*(self.epochs-self.epoch)
@@ -65,30 +70,39 @@ class MetricLogger:
 
 # Loss Helpers
 
-def project_warp(src, depth, pose, cam):
-    ''' Projects p_t onto source views using predicted depth and camera pose 
-    then warps the projected point values using bilinear interpolation.
+def project_warp(src:torch.Tensor, 
+                 depth:torch.Tensor, 
+                 pose:torch.Tensor, 
+                 cam:torch.Tensor):
+    ''' 
+    Projects source onto target view using predicted depth and camera pose 
+    then warps the projected pixel values using bilinear interpolation.
+
+    Args:
+        src: Batch images for single source view (B,1,H,W)
+        depth: Depth map prediction (B,1,H,W)
+        pose: 6DOF pose predictions as target->src (B,n_src,6)
+        cam: Camera intrinsics (B,3,3)
     '''
-    # pose_mat = torch.hstack(
-    #     [torch.eye(3), torch.zeros((3,1))]
-    #     ).repeat(src.shape[0],1,1)
-    # P = K @ [R|t]
+    # P = K @ [R|t]_t->s (Camera Projection Matrix)
     pose_mat = get_pose_mat(pose)
     P = torch.matmul(cam, pose_mat)
     
-    # X = D @ K^-1 @ p_t
+    # X = D @ K^-1 @ p_t (3D point)
+    # p_t - homogeneous coords of pixels in target view 
+    #   (just passing in src here for convenience as src and target are the same shape)
     p_t = get_p_t(src)
     cam_coords = torch.linalg.solve(
         cam, p_t.view(src.shape[0],3,-1)
         ).view(src.shape[0],3,*src.shape[2:])
     cam_coords *= depth
     # Homogenous transform
-    cam_coords = torch.cat(
-        [cam_coords, 
-         torch.ones((src.shape[0], 1, *cam_coords.shape[2:]), device=src.device)],
-        dim=1)
+    cam_coords = torch.cat([
+        cam_coords, 
+        torch.ones((src.shape[0], 1, *cam_coords.shape[2:]), device=src.device)
+        ], dim=1)
     
-    # p_s = P @ X
+    # p_s = P @ X (Projected coords of pixels in source view)
     p_s = torch.matmul(P, cam_coords.view(src.shape[0], 4, -1))
     # Non-homogenous transform
     p_s = torch.cat([
@@ -100,7 +114,8 @@ def project_warp(src, depth, pose, cam):
     return bilinear_sampling(src, p_s)
 
 def get_pose_mat(pose_6dof):
-    ''' Returns pose matrix [R|t] of shape (B,3,4) using translation 
+    ''' 
+    Returns pose matrix [R|t] of shape (B,3,4) using translation 
     and euler angle values from pose_6dof (t_x, t_y, t_z, alpha, beta, gamma).
     '''
     # Extract euler angles
@@ -135,110 +150,43 @@ def get_pose_mat(pose_6dof):
     pose_mat = torch.cat([R,t], axis=2)
     return pose_mat
 
-def get_p_t(src):
-    ''' Get batch pixel grid in homogeneous coords.'''
+def get_p_t(img: torch.Tensor):
+    ''' Get batch pixel grid for img in homogeneous coords. '''
     # x coords
-    p_tx = torch.arange(src.shape[2]).unsqueeze(1)
-    p_tx = p_tx.repeat(1,src.shape[3])
-    # t coords
-    p_ty = torch.arange(src.shape[3]).repeat(src.shape[2])
-    p_ty = p_ty.view(src.shape[2], src.shape[3])
+    p_tx = torch.arange(img.shape[2], device=img.device).unsqueeze(1)
+    p_tx = p_tx.repeat(1,img.shape[3])
+    # y coords
+    p_ty = torch.arange(img.shape[3], device=img.device).repeat(img.shape[2])
+    p_ty = p_ty.view(img.shape[2], img.shape[3])
     # z coords
-    p_tz = torch.ones_like(p_ty)
+    p_tz = torch.ones_like(p_ty, device=img.device)
     # Combine into batch homogeneous coords
     p_t = torch.stack([p_tx, p_ty, p_tz], 0).unsqueeze(0)
-    p_t = p_t.repeat(src.shape[0],1,1,1) 
+    p_t = p_t.repeat(img.shape[0],1,1,1) 
     return p_t.to(torch.float32)
 
 def bilinear_sampling(src, p_s):
-    ''' Returns a new image by bilinear sampling values from src with indices from p_s. '''
-    # grid_sample expects values in [-1,1]
-    p_s = p_s / 128. - 1.
+    ''' Returns a new image by bilinear sampling values from src with indices from p_s. 
+    
+    Args:
+        src: Batch images for single source view (B,1,H_s,W_s)
+        p_s: p_t's unnormalized projected coordinates (x,y) in source view (B,2,H_t,W_t).
+    '''
+    # Normalize p_s by H,W (grid_sample expects values in [-1,1])
+    p_s[:,0] = p_s[:,0] / (p_s.shape[2]/2) - 1.
+    p_s[:,1] = p_s[:,1] / (p_s.shape[3]/2) - 1.
     pred = nn.functional.grid_sample(
         src, p_s.permute(0,2,3,1), align_corners=False
         )
     return pred
 
-    # max_x = torch.tensor(src.shape[3], device=src.device)
-    # max_y = torch.tensor(src.shape[2], device=src.device)
-    # zero = torch.zeros(1, device=src.device)
-
-    # p_sx, p_sy = p_s[:,0], p_s[:,1]
-    # # Create grid indices
-    # p_sx0 = torch.floor(p_sx)
-    # p_sx1 = torch.clip(p_sx0 + 1, zero, max_x-1)
-    # p_sx0 = torch.clip(p_sx0, zero, max_x-1)
-    # p_sy0 = torch.floor(p_sy)
-    # p_sy1 = torch.clip(p_sy0 + 1, zero, max_y-1)
-    # p_sy0 = torch.clip(p_sy0, zero, max_y-1)
-
-    # # value weights
-    # alpha_x0 = p_sx1 - p_sx
-    # alpha_x1 = p_sx - p_sx0
-    # alpha_y0 = p_sy1 - p_sy
-    # alpha_y1 = p_sy - p_sy1
-
-    # flat_x = src.shape[3]
-    # flat_xy = flat_x*src.shape[2]
-
-    # flat_b = torch.range(0, p_s.shape[0], device=p_s.device) * flat_xy
-    # rep = torch.ones((1,p_s.shape[2]*p_s.shape[3]), device=p_s.device)
-    # p_sflat = torch.mm(flat_b.view(-1,1), rep).view(-1).view(p_s.shape[0],1,*p_s.shape[2:])
-    # print(p_sflat.shape)
-
-    #---
-    # p_s = p_s.view(p_s.shape[0], 2, -1)
-
-    # # create new 0 array the size of src
-    # src = src.squeeze()
-    # pred = torch.zeros_like(src)
-
-    # tl_alpha = torch.frac(p_s)
-    # tl_alpha_h = tl_alpha[:,0]
-    # tl_alpha_w = tl_alpha[:,1]
-
-    # br = torch.ceil(p_s)
-    # br_alpha = br - p_s
-    # br_alpha_h = br_alpha[:,0]
-    # br_alpha_w = br_alpha[:,1]
-    
-    # # Top left indices
-    # tl = torch.floor(p_s).to(torch.long).permute(0,2,1)
-    # # Mask out of range indices
-    # tl_mask = get_out_of_range_mask(height, width, tl)
-    # tl_valid = torch.where(tl_mask, tl, 0)
-    # tl_h, tl_w = tl_valid[:,:,0], tl_valid[:,:,1] 
-
-    # # Bottom right indices
-    # br = br.to(torch.long).permute(0,2,1)
-    # # Mask out of range indices
-    # br_mask = get_out_of_range_mask(height, width, br)
-    # br_valid = torch.where(br_mask, br, 0)
-    # br_h, br_w = br_valid[:,:,0], br_valid[:,:,1] 
-
-    # # tr/bl can be extracted from tl/br
-    # tr_h, tr_w = tl_h, br_w 
-    # bl_h, bl_w = br_h, tl_w
-
-    # for i in range(src.shape[0]):
-    #     pred[i,tl_h[i],tl_w[i]] += src[i,tl_h[i],tl_w[i]] * tl_alpha_h[i] * tl_alpha_w[i]
-    #     pred[i,tr_h[i],tr_w[i]] += src[i,tr_h[i],tr_w[i]] * tl_alpha_h[i] * br_alpha_w[i]
-    #     pred[i,bl_h[i],bl_w[i]] += src[i,bl_h[i],bl_w[i]] * br_alpha_h[i] * tl_alpha_w[i]
-    #     pred[i,br_h[i],br_w[i]] += src[i,br_h[i],br_w[i]] * br_alpha_h[i] * br_alpha_w[i]
-
-    # return pred
-
-def get_out_of_range_mask(height, width, grid):
-    ''' Returns a mask with the same shape as grid, where: 
-    mask[i,j]==[1,1] if grid[i,j,0] < height and grid[i,j,1] < width and grid[i,j] >= 0,  
-    else mask[i,j]==[0,0].
-    '''
-    height_mask = (grid[:,:,:1] < height) * (grid[:,:,:1] >= 0) 
-    width_mask = (grid[:,:,1:] < width) * (grid[:,:,1:] >= 0) 
-    return (height_mask*width_mask).repeat(1,1,2)
-
 def compute_smooth_loss(depth:torch.Tensor, loss:nn.L1Loss):
-    ''' L1 of second order gradients of depth map. '''
+    ''' L1 of second order gradients of depth map. 
+    
+    Args:
+        depth: Depth map prediction (B,1,H,W)
+        loss: L1 loss
+    '''
     dy = depth[:, :, 1:, :] - depth[:, :, :-1, :]
     dx = depth[:, :, :, 1:] - depth[:, :, :, :-1]
     dxdy = dx[:, :, 1:, :] - dx[:, :, :-1, :]

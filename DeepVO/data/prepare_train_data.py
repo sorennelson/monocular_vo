@@ -30,6 +30,7 @@ def dump_example(n, args):
     if n % 2000 == 0:
         print('Progress %d/%d....' % (n, data_loader.num_train))
     example = data_loader.get_train_example_with_idx(n)
+
     if example == False:
         return
     image_seq = concat_image_seq(example['image_seq'])
@@ -51,6 +52,12 @@ def dump_example(n, args):
     dump_cam_file = dump_dir + '/%s_cam.txt' % example['file_name']
     with open(dump_cam_file, 'w') as f:
         f.write('%f,0.,%f,0.,%f,%f,0.,0.,1.' % (fx, cx, fy, cy))
+    dump_pose_file = dump_dir + '/%s_pose.txt' % example['file_name']
+    with open(dump_pose_file, 'w') as f:
+        src1_pose = ','.join([str(x) for x in example['pose_seq'][0]])
+        targ_pose = ','.join([str(x) for x in example['pose_seq'][1]])
+        src2_pose = ','.join([str(x) for x in example['pose_seq'][2]])
+        f.write(f'{src1_pose}|{targ_pose}|{src2_pose}')
 
 def main():
     if not os.path.exists(args.dump_root):
