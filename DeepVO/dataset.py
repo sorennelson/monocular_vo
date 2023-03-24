@@ -38,7 +38,6 @@ class KittiDataset(StreamingDataset):
                          shuffle=shuffle, 
                          batch_size=batch_size)
         self.transforms = transforms
-        self.global_pose = global_pose
 
     def __getitem__(self, idx:int) -> Any:
         obj = super().__getitem__(idx)
@@ -50,11 +49,7 @@ class KittiDataset(StreamingDataset):
         cam = np.array(obj['cam'].split(',')).reshape(3,3)
         cam = torch.tensor(cam.astype(np.float32))
 
-        if not self.global_pose:
-            pose = self._extract_relative_pose_from_sequence(obj['pose'])
-        else:
-            pose = self._extract_global_pose_from_sequence(obj['pose'])
-
+        pose = self._extract_relative_pose_from_sequence(obj['pose'])
         
         # return self.transforms(x), y
         return target, src, cam, pose
