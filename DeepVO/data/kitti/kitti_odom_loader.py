@@ -29,6 +29,18 @@ class kitti_odom_loader(object):
             for n in range(N):
                 self.test_frames.append('%.2d %.6d' % (seq, n))
         self.num_test = len(self.test_frames)
+        self.collect_test_poses()
+        assert len(self.test_poses) == self.num_test
+
+    def collect_test_poses(self):
+        self.test_poses = []
+        for seq in self.test_seqs:
+            with open(os.path.join(self.dataset_dir, 'poses', '%.2d.txt' % seq), 'r') as f:
+                seq_poses = [line.strip().split() for line in f.readlines()]
+                for i in range(len(seq_poses)):
+                    seq_poses[i].insert(0, i)
+                    seq_poses[i].insert(0, seq)
+                self.test_poses.extend(seq_poses)
         
     def collect_train_frames(self):
         self.train_frames = []
@@ -66,7 +78,7 @@ class kitti_odom_loader(object):
             return True
         return False
 
-    def load_image_sequence(self, frames, tgt_idx, seq_length):
+    def load_image_sequence(self, frames, poses, tgt_idx, seq_length):
         half_offset = int((seq_length - 1)/2)
         image_seq = []
         pose_seq = []
@@ -79,12 +91,12 @@ class kitti_odom_loader(object):
                 zoom_x = self.img_width/curr_img.shape[1]
             curr_img = cv2.resize(curr_img, (self.img_width,self.img_height))
             image_seq.append(curr_img)
-            pose_seq.append(self.train_poses[curr_idx])
+            pose_seq.append(poses[curr_idx])
         return image_seq, zoom_x, zoom_y, pose_seq
 
-    def load_example(self, frames, tgt_idx, load_pose=False):
+    def load_example(self, frames, poses, tgt_idx, load_pose=False):
         image_seq, zoom_x, zoom_y, pose_seq = self.load_image_sequence(
-            frames, tgt_idx, self.seq_length
+            frames, poses, tgt_idx, self.seq_length
             )
         tgt_drive, tgt_frame_id = frames[tgt_idx].split(' ')
 
@@ -103,7 +115,13 @@ class kitti_odom_loader(object):
     def get_train_example_with_idx(self, tgt_idx):
         if not self.is_valid_sample(self.train_frames, tgt_idx):
             return False
-        example = self.load_example(self.train_frames, tgt_idx)
+        example = self.load_example(self.train_frames, self.train_poses, tgt_idx)
+        return example
+    
+    def get_test_example_with_idx(self, tgt_idx):
+        if not self.is_valid_sample(self.test_frames, tgt_idx):
+            return False
+        example = self.load_example(self.test_frames, self.test_poses, tgt_idx)
         return example
 
     def load_image(self, drive, frame_id):
