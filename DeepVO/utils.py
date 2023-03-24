@@ -144,7 +144,7 @@ def get_pose_mat(pose_6dof):
         torch.cat([zeros, sin_a, cos_a], axis=3)
     ], axis=2)
     # Final rotation matrix
-    R = (R_z @ R_y @ R_x).squeeze()
+    R = (R_z @ R_y @ R_x).squeeze(1)
     # [R|t]
     t = pose_6dof[:,0,:3].unsqueeze(2)
     pose_mat = torch.cat([R,t], axis=2)
