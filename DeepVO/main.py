@@ -45,6 +45,7 @@ def train(data_loader:DataLoader,
           pose_net:nn.Module, 
           opt:torch.optim.Optimizer, 
           logger:MetricLogger):
+    
     depth_net.train()
     pose_net.train()
 
@@ -75,11 +76,12 @@ def validate(data_loader:DataLoader,
              depth_net:DepthCNN, 
              pose_net:PoseCNN, 
              logger:MetricLogger):
+    
     depth_net.eval()
     pose_net.eval()
 
     with torch.no_grad():
-        for i, (target, src, cam, pose_g) in enumerate(data_loader):
+        for i, (target, src, cam, pose_gt) in enumerate(data_loader):
             target = target.to(device)
             src = src.to(device)
             cam = cam.to(device)

@@ -6,7 +6,6 @@ from collections import OrderedDict
 class PoseCNN(nn.Module):
     ''' 
     Note: Not using multi-scale output
-    Note: No explainability output yet
     '''
     def __init__(self, exp=False):
         super().__init__()
@@ -37,7 +36,6 @@ class PoseCNN(nn.Module):
                 DecoderBlock(32, 16, kernel_size=(3,3)),
                 nn.Conv2d(16, 2*self.n_src, (1,1), 1),
             )
-
 
     def forward(self, target, src):
         x = torch.cat([target, src], axis=1)
