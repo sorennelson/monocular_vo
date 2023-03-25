@@ -1,9 +1,9 @@
-from dataset import get_training_data_loaders
+from dataset import get_training_data_loaders, get_test_data_loader
 from models.depth_cnn import DepthCNN
 from models.pose_cnn import PoseCNN
 from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat
 
-import argparse
+import os, argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -14,7 +14,6 @@ parser.add_argument('--data_path', type=str,
                     help='Remote/local path where full dataset is persistently stored.')
 parser.add_argument('--data_path_local', type=str, default='/tmp/kitti_vo_pose',
                     help='Local working dir where dataset is cached during operation.')
-parser.add_argument('--n_workers', type=int, default=1, help='Number of workers.')
 # Output
 parser.add_argument('--job_id', type=str, help='Job identifier.')
 parser.add_argument('--save_path', type=str, default='./checkpoints/', 
@@ -30,6 +29,10 @@ parser.add_argument('--learning_rate', type=float, default=0.0002, help='Learnin
 parser.add_argument('--decay', type=float, default=0.05, help='Weight decay.')
 parser.add_argument('--epochs', type=int, default=10, help='Training epochs.')
 parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
+
+parser.add_argument('--evaluate', action='store_true', 
+                    help='Evaluate the pretrained model stored in save_path on the test set.')
+parser.add_argument('--n_workers', type=int, default=1, help='Number of workers.')
 
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -96,6 +99,48 @@ def validate(data_loader:DataLoader,
             logger.update(len(target), loss.item(), pose_dist)
         
     logger.log_epoch_stats(train=False)
+
+
+def validate_global(data_loader:DataLoader, 
+             pose_net:PoseCNN):
+    
+    # Indexes are out of order so loop through to grab sequences and range of indexes
+    seq_max = {}
+    for i, (_, _, _, (pose_gt, pose_idx)) in enumerate(data_loader):
+        for b in range(len(pose_idx)):
+            for i in range(len(pose_idx[b])):
+                seq = pose_idx[b,i,0].item()
+                m = seq_max[seq] if seq in seq_max else 0
+                seq_max[seq] = max(pose_idx[b,i,1].item(), m)
+    
+    # Separate into src_1 and src_2 poses
+    seq_poses_1 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
+    seq_poses_2 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
+
+    pose_net.eval()
+    with torch.no_grad():
+        for i, (target, src, _, pose_gt) in enumerate(data_loader):
+            target = target.to(device)
+            src = src.to(device)
+            pose_gt, pose_idx = pose_gt
+            pose_gt = pose_gt.to(device)
+            pose_idx = pose_idx.to(device)
+            
+            # Predict pose
+            pose, _ = pose_net(target, src)
+
+            # Euler to rotation matrix [R|t] to match gt
+            pose_src1 = get_pose_mat(pose[:,:1]).view(-1,12)
+            pose_src2 = get_pose_mat(pose[:,:1]).view(-1,12)
+
+            for i in range(len(pose_idx)):
+                # seq consistent for both source views
+                seq = pose_idx[i,0,0].item()
+                seq_poses_1[seq][pose_idx[i,0,1]] = pose_src1[i]
+                seq_poses_2[seq][pose_idx[i,2,1]] = pose_src2[i]
+
+    torch.save(seq_poses_1, os.path.join(args.save_path, args.job_id, f'pose_preds-1.pt'))
+    torch.save(seq_poses_2, os.path.join(args.save_path, args.job_id, f'pose_preds-2.pt'))  
 
 
 def compute_loss(target: torch.Tensor, 
@@ -189,11 +234,27 @@ def main():
         )
     logger.log_str(str(args))
 
+    # Load pretrained model and test
+    if args.evaluate:
+        test_loader = get_test_data_loader(
+            args.data_path, args.data_path_local, args.batch_size, args.n_workers
+        )
+        # path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
+        # assert os.path.exists(path), f'Bad checkpoint path {path}'
+
+        pose_net = PoseCNN(args.lambda_e > 0.)
+        # pose_net.load_state_dict(torch.load(path))
+        pose_net.drop_exp()
+        pose_net.to(device)
+
+        validate_global(test_loader, pose_net)
+        return
+    
     # Load dataloader
     train_loader, test_loader = get_training_data_loaders(
         args.data_path, args.data_path_local, args.batch_size, args.n_workers
-        )
-    
+    )
+
     # Load models
     depth_net = DepthCNN(args.skip)
     pose_net = PoseCNN(args.lambda_e > 0.)
@@ -210,6 +271,10 @@ def main():
         train(train_loader, depth_net, pose_net, opt, logger)
         logger.reset_metrics()
         validate(test_loader, depth_net, pose_net, logger)
+
+        # Save Pose model
+        torch.save(pose_net.state_dict(), 
+                   os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar'))
 
 
 if __name__=='__main__':

@@ -36,6 +36,10 @@ class PoseCNN(nn.Module):
                 DecoderBlock(32, 16, kernel_size=(3,3)),
                 nn.Conv2d(16, 2*self.n_src, (1,1), 1),
             )
+    
+    def drop_exp(self):
+        ''' Remove explainability stem for inference. '''
+        self.exp = None
 
     def forward(self, target, src):
         x = torch.cat([target, src], axis=1)

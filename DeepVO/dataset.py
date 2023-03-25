@@ -25,6 +25,19 @@ def get_training_data_loaders(remote_path, local_path, batch_size, n_workers):
     
     return train_loader, test_loader
 
+def get_test_data_loader(remote_path, local_path, batch_size, n_workers):
+    test_data = KittiDataset(f'{remote_path}/test', f'{local_path}/test', 
+                              shuffle=False, 
+                              batch_size=batch_size, 
+                              transforms=[],
+                              global_pose=True)
+    
+    test_loader = DataLoader(test_data, batch_size=batch_size,
+                             num_workers=n_workers, pin_memory=True)
+    
+    return test_loader
+
+
 class KittiDataset(StreamingDataset):
     def __init__(self,
                  remote: str,
@@ -38,6 +51,7 @@ class KittiDataset(StreamingDataset):
                          shuffle=shuffle, 
                          batch_size=batch_size)
         self.transforms = transforms
+        self.global_pose = global_pose
 
     def __getitem__(self, idx:int) -> Any:
         obj = super().__getitem__(idx)
@@ -49,7 +63,10 @@ class KittiDataset(StreamingDataset):
         cam = np.array(obj['cam'].split(',')).reshape(3,3)
         cam = torch.tensor(cam.astype(np.float32))
 
-        pose = self._extract_relative_pose_from_sequence(obj['pose'])
+        if not self.global_pose:
+            pose = self._extract_relative_pose_from_sequence(obj['pose'])
+        else:
+            pose = self._extract_global_pose_from_sequence(obj['pose'])
         
         # return self.transforms(x), y
         return target, src, cam, pose
@@ -111,17 +128,17 @@ class KittiDataset(StreamingDataset):
         pose_src1 = np.array(pose_seq[0].split(',')[2:]).reshape(3,4)
         pose_src1 = torch.tensor(pose_src1.astype(np.float32))
         idx_src1 = np.array(pose_seq[0].split(',')[:2])
-        idx_src1 = torch.tensor(idx_src1.astype(np.int32))
+        idx_src1 = torch.tensor(idx_src1.astype(np.int32), dtype=torch.int)
 
         pose_target = np.array(pose_seq[1].split(',')[2:]).reshape(3,4)
         pose_target = torch.tensor(pose_target.astype(np.float32))
         idx_target = np.array(pose_seq[1].split(',')[:2])
-        idx_target = torch.tensor(idx_target.astype(np.int32))
+        idx_target = torch.tensor(idx_target.astype(np.int32), dtype=torch.int)
 
         pose_src2 = np.array(pose_seq[2].split(',')[2:]).reshape(3,4)
         pose_src2 = torch.tensor(pose_src2.astype(np.float32))
         idx_src2 = np.array(pose_seq[2].split(',')[:2])
-        idx_src2 = torch.tensor(idx_src2.astype(np.int32))
+        idx_src2 = torch.tensor(idx_src2.astype(np.int32), dtype=torch.int)
 
         poses = torch.stack([
             pose_src1, pose_target, pose_src2
