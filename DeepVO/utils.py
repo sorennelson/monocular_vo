@@ -197,3 +197,35 @@ def compute_smooth_loss(depth:torch.Tensor, loss:nn.L1Loss):
             loss(dxdx, torch.zeros_like(dxdx, device=depth.device)) + \
             loss(dydx, torch.zeros_like(dydx, device=depth.device)) + \
             loss(dydy, torch.zeros_like(dydy, device=depth.device))
+
+
+# Pose Helpers
+
+def get_src1_origin_pose(pose: torch.Tensor):
+    ''' 
+    Converts pose from target origin to src1 origin.
+
+    Args:
+        pose: predicted 6DOF with target origin (B,2,6)
+    '''
+    # Euler to rotation matrices [R|t]
+    pose_src1 = get_pose_mat(pose[:,:1])
+    pose_src2 = get_pose_mat(pose[:,1:])
+    # Origin pose
+    pose_target = torch.eye(4, device=pose.device)[:-1].unsqueeze(0)
+    pose_target = pose_target.repeat(pose.shape[0],1,1)
+
+    # Convert rotation to src1 origin (R^(-1)_1 @ R)
+    R_src1_inv = torch.linalg.inv(pose_src1[:,:,:-1])
+    R = torch.cat([
+        pose_target[:,:,:-1], R_src1_inv, R_src1_inv @ pose_src2[:,:,:-1]
+    ], dim=0)
+
+    # Convert translation to src1 origin
+    t_target = pose_src1[:,:,-1:]
+    t_src2 = t_target + pose_src1[:,:,:-1] @ pose_src2[:,:,:-1] @ pose_src2[:,:,-1:]
+    t = torch.cat([
+        pose_target[:,:,-1:], t_target, t_src2
+    ], dim=0)
+
+    return torch.cat([R, t], dim=-1)

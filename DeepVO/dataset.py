@@ -1,13 +1,14 @@
+import random
 import torch
 import numpy as np
+import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader
 from streaming import StreamingDataset
 from typing import Callable, Any
 
 def get_training_data_loaders(remote_path, local_path, batch_size, n_workers):
-    # TODO
-    train_transforms = []
-    test_transforms = []
+    train_transforms = transforms
+    test_transforms = None
 
     train_data = KittiDataset(f'{remote_path}/train', f'{local_path}/train', 
                               shuffle=True, 
@@ -25,17 +26,53 @@ def get_training_data_loaders(remote_path, local_path, batch_size, n_workers):
     
     return train_loader, test_loader
 
+
 def get_test_data_loader(remote_path, local_path, batch_size, n_workers):
     test_data = KittiDataset(f'{remote_path}/test', f'{local_path}/test', 
                               shuffle=False, 
                               batch_size=batch_size, 
-                              transforms=[],
-                              global_pose=True)
+                              transforms=None,
+                              src1_origin=True)
     
     test_loader = DataLoader(test_data, batch_size=batch_size,
                              num_workers=n_workers, pin_memory=True)
     
     return test_loader
+
+
+# def transforms_h(target, src, cam):
+#     def horizontal_flip(imgs, cam):
+#         if random.random() < 0.5:
+#             imgs = TF.hflip(imgs)
+#             cam[0,2] = imgs.shape[2] - cam[0,2]
+#         return imgs, cam
+
+#     imgs = torch.cat([target, src], dim=0)
+#     imgs, cam = horizontal_flip(imgs, cam)
+
+
+def transforms(target, src, cam):
+
+    def crop_resize(imgs, cam):
+        h, w = imgs.shape[1], imgs.shape[2]
+        # Resize
+        r_scale_y, r_scale_x = random.uniform(1., 1.15), random.uniform(1., 1.15) 
+        res_h, res_w = int(h*r_scale_y), int(w*r_scale_x)
+        imgs = TF.resize(imgs, (res_h, res_w))
+        # Crop
+        crop_top, crop_left = int(random.uniform(0, res_h-h+1)), int(random.uniform(0, res_w-w+1))
+        imgs = TF.crop(imgs, crop_top, crop_left, h, w)
+        # Adjust intrinsics
+        cam[0,0] *= r_scale_x
+        cam[1,1] *= r_scale_y
+        cam[0,2] = cam[0,2] * r_scale_x - crop_left
+        cam[1,2] = cam[1,2] * r_scale_y - crop_top
+        return imgs, cam
+    
+    imgs = torch.cat([target, src], dim=0)
+    imgs, cam = crop_resize(imgs, cam)
+
+    return imgs[:1], imgs[1:], cam
 
 
 class KittiDataset(StreamingDataset):
@@ -45,13 +82,13 @@ class KittiDataset(StreamingDataset):
                  shuffle: bool,
                  batch_size: int,
                  transforms: Callable,
-                 global_pose: bool = False
+                 src1_origin: bool = False
                 ) -> None:
         super().__init__(local=local, remote=remote, 
                          shuffle=shuffle, 
                          batch_size=batch_size)
         self.transforms = transforms
-        self.global_pose = global_pose
+        self.src1_origin = src1_origin
 
     def __getitem__(self, idx:int) -> Any:
         obj = super().__getitem__(idx)
@@ -63,12 +100,14 @@ class KittiDataset(StreamingDataset):
         cam = np.array(obj['cam'].split(',')).reshape(3,3)
         cam = torch.tensor(cam.astype(np.float32))
 
-        if not self.global_pose:
-            pose = self._extract_relative_pose_from_sequence(obj['pose'])
+        if not self.src1_origin:
+            pose = self._extract_target_origin_pose_from_sequence(obj['pose'])
         else:
-            pose = self._extract_global_pose_from_sequence(obj['pose'])
+            pose = self._extract_src1_orgin_pose_from_sequence(obj['pose'])
         
-        # return self.transforms(x), y
+        if self.transforms:
+            target, src, cam = self.transforms(target, src, cam)
+        
         return target, src, cam, pose
     
     def _unpack_img_sequence(self, seq:torch.Tensor, width=416):
@@ -88,13 +127,13 @@ class KittiDataset(StreamingDataset):
         '''Convert to range [0,256]'''
         return ((img+1)*128).type(torch.int8)
 
-    def _augment_imgs(self, target, src, cam):
-        pass
+    
+
 
     def _get_multi_scale_intrinsics(self, intrinsics, num_scales):
         pass
 
-    def _extract_relative_pose_from_sequence(self, pose_seq):
+    def _extract_target_origin_pose_from_sequence(self, pose_seq):
         pose_seq = pose_seq.split('|')
         # Unpack global pose (poses are stored as [seq, idx, pose])
         pose_src1 = np.array(pose_seq[0].split(',')[2:]).reshape(3,4)
@@ -122,7 +161,7 @@ class KittiDataset(StreamingDataset):
             pose_src1_rel, pose_src2_rel
         ], dim=0)
 
-    def _extract_global_pose_from_sequence(self, pose_seq):
+    def _extract_src1_orgin_pose_from_sequence(self, pose_seq):
         pose_seq = pose_seq.split('|')
         # Unpack global pose and seq idx (poses are stored as [seq, idx, pose])
         pose_src1 = np.array(pose_seq[0].split(',')[2:]).reshape(3,4)
@@ -143,9 +182,13 @@ class KittiDataset(StreamingDataset):
         poses = torch.stack([
             pose_src1, pose_target, pose_src2
         ], dim=0)
-        
-        indexing = torch.stack([
-            idx_src1, idx_target, idx_src2
-        ], dim=0)
 
-        return poses, indexing
+        # Src_1 as origin
+        poses[:,:,-1] -= pose_src1[:,-1]
+        poses = torch.linalg.inv(pose_src1[:,:3]) @ poses
+        
+        # indexing = torch.stack([
+        #     idx_src1, idx_target, idx_src2
+        # ], dim=0)
+
+        return poses #, indexing

@@ -1,7 +1,7 @@
 from dataset import get_training_data_loaders, get_test_data_loader
-from models.depth_cnn import DepthCNN
-from models.pose_cnn import PoseCNN
-from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat
+from models.depth_cnn_large import DepthCNN
+from models.pose_cnn_large import PoseCNN
+from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat, get_src1_origin_pose
 
 import os, argparse
 import torch
@@ -37,10 +37,7 @@ parser.add_argument('--n_workers', type=int, default=1, help='Number of workers.
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# TODO: Performance w/o explainability
 # TODO: move args to Odometry
-# TODO: Verify pose MSE
-# TODO: Test dataset
 # TODO: README
 
 def train(data_loader:DataLoader, 
@@ -101,46 +98,119 @@ def validate(data_loader:DataLoader,
     logger.log_epoch_stats(train=False)
 
 
-def validate_global(data_loader:DataLoader, 
-             pose_net:PoseCNN):
-    
-    # Indexes are out of order so loop through to grab sequences and range of indexes
-    seq_max = {}
-    for i, (_, _, _, (pose_gt, pose_idx)) in enumerate(data_loader):
-        for b in range(len(pose_idx)):
-            for i in range(len(pose_idx[b])):
-                seq = pose_idx[b,i,0].item()
-                m = seq_max[seq] if seq in seq_max else 0
-                seq_max[seq] = max(pose_idx[b,i,1].item(), m)
-    
-    # Separate into src_1 and src_2 poses
-    seq_poses_1 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
-    seq_poses_2 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
-
+def validate_pose(data_loader:DataLoader, pose_net:PoseCNN, logger:MetricLogger):
     pose_net.eval()
+
     with torch.no_grad():
-        for i, (target, src, _, pose_gt) in enumerate(data_loader):
+        for i, (target, src, cam, pose_gt) in enumerate(data_loader):
             target = target.to(device)
             src = src.to(device)
-            pose_gt, pose_idx = pose_gt
+            cam = cam.to(device)
             pose_gt = pose_gt.to(device)
-            pose_idx = pose_idx.to(device)
-            
-            # Predict pose
+
             pose, _ = pose_net(target, src)
 
-            # Euler to rotation matrix [R|t] to match gt
-            pose_src1 = get_pose_mat(pose[:,:1]).view(-1,12)
-            pose_src2 = get_pose_mat(pose[:,:1]).view(-1,12)
+            pose_dist = compute_sequence_ATE(pose, pose_gt)
 
-            for i in range(len(pose_idx)):
-                # seq consistent for both source views
-                seq = pose_idx[i,0,0].item()
-                seq_poses_1[seq][pose_idx[i,0,1]] = pose_src1[i]
-                seq_poses_2[seq][pose_idx[i,2,1]] = pose_src2[i]
+            logger.update(len(target), 0., pose_dist)
+        
+    logger.log_epoch_stats(train=False)
 
-    torch.save(seq_poses_1, os.path.join(args.save_path, args.job_id, f'pose_preds-1.pt'))
-    torch.save(seq_poses_2, os.path.join(args.save_path, args.job_id, f'pose_preds-2.pt'))  
+# def validate_global(data_loader:DataLoader, pose_net:PoseCNN, logger:MetricLogger):
+    
+#     # Indexes may be out of order so loop through to grab sequences and range of indexes
+#     seq_max = {}
+#     for i, (_, _, _, (pose_gt, pose_idx)) in enumerate(data_loader):
+#         for b in range(len(pose_idx)):
+#             for i in range(len(pose_idx[b])):
+#                 seq = pose_idx[b,i,0].item()
+#                 m = seq_max[seq] if seq in seq_max else 0
+#                 seq_max[seq] = max(pose_idx[b,i,1].item(), m)
+    
+#     # Separate into src_1 and src_2 poses
+#     seq_poses_1 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
+#     seq_poses_2 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
+#     seq_gt = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
+
+#     pose_net.eval()
+#     with torch.no_grad():
+#         for i, (target, src, _, pose_gt) in enumerate(data_loader):
+#             target = target.to(device)
+#             src = src.to(device)
+#             pose_gt, pose_idx = pose_gt
+#             pose_gt = pose_gt.to(device)
+#             pose_idx = pose_idx.to(device)
+            
+#             # Predict pose
+#             pose, _ = pose_net(target, src)
+
+#             # Euler to rotation matrix [R|t] to match gt
+#             pose_src1 = get_pose_mat(pose[:,:1]).view(-1,12)
+#             pose_src2 = get_pose_mat(pose[:,1:]).view(-1,12)
+
+#             for i in range(len(pose_idx)):
+#                 # seq consistent for both source views
+#                 seq = pose_idx[i,0,0].item()
+#                 seq_poses_1[seq][pose_idx[i,0,1]] = pose_src1[i]
+#                 seq_poses_2[seq][pose_idx[i,2,1]] = pose_src2[i]
+
+#                 # TODO: Multiply seq_poses_2 by target
+
+#                 seq_gt[seq][pose_idx[i,0,1]] = pose_gt[i,0].view(12)
+#                 seq_gt[seq][pose_idx[i,2,1]] = pose_gt[i,2].view(12)
+
+#     torch.save(seq_poses_1, os.path.join(args.save_path, args.job_id, f'pose_preds-1.pt'))
+#     torch.save(seq_poses_2, os.path.join(args.save_path, args.job_id, f'pose_preds-2.pt'))  
+
+#     # Convert each pose to global (only applied to src 2 for now)
+#     for seq, poses in seq_poses_2.items():
+#         errors = []
+#         # Start from third frame with src2 so insert in gt pose for 
+#         # frames 0 and 1 to get global pose
+#         poses[:2] = seq_gt[seq][:2]
+
+#         for i, pose in enumerate(poses):
+#             if i < 2: continue
+
+#             # poses[:,:,-1] -= pose_src1[:,-1]
+#             # poses = torch.linalg.inv(pose_src1[:,:3]) @ poses
+
+
+#             # Extract 
+#             # t, R = pose.view(3,4)[:,-1:], pose.view(3,4)[:,:-1]
+#             pose_curr = torch.cat([
+#                 pose.view(3,4), torch.tensor([[0,0,0,1]], device=device)
+#                 ], axis=0)
+#             pose_prev = torch.cat([
+#                 poses[i-1].view(3,4), torch.tensor([[0,0,0,1]])
+#                 ], axis=0)
+#             # t_prev, R_prev = pose_prev[:,-1:], pose_prev[:,:-1]
+            
+#             # t = (t_prev + (R_prev @ t)).squeeze(-1)
+#             # R = R_prev @ R
+
+#             pose_curr = pose_prev @ torch.linalg.inv(pose_curr)
+#             R, t = pose_curr[:-1,:-1], pose_curr[:-1,-1]
+
+#             # Optimize scale
+#             t_gt = seq_gt[seq][i].view(3,4)[:,-1]
+#             scale = torch.sum(t_gt * t)/torch.sum(t ** 2)
+#             t *= scale
+#             print(scale, t, t_gt)
+
+#             poses[i] = torch.cat([R, t.unsqueeze(-1)], dim=-1).view(12)
+
+#             errors.append(torch.linalg.norm(t - t_gt))
+#             if i == 20:
+#                 break
+
+#         # Output sequence MSE
+#         seq_mse = torch.mean(torch.tensor(errors))
+#         logger.log_str(f'Seq {seq}: MSE {seq_mse.item()}')
+        
+
+#     # print(seq_poses_2[10][:3])
+#     # print(seq_poses_2[10][-3:])
 
 
 def compute_loss(target: torch.Tensor, 
@@ -192,7 +262,9 @@ def compute_loss(target: torch.Tensor,
     return l_vs + args.lambda_s * l_s + args.lambda_e * l_e
 
 def compute_pose_metrics(pose_pred, pose_gt):
-    ''' Returns the pose translation MSE as relative translation from Target->Src. 
+    '''
+      Returns the pose translation MSE as relative translation from 
+      Target->Src (target origin). 
 
     Args:
         pose_pred: 6DOF pose prediction per source view (B,n_src,6) 
@@ -216,6 +288,25 @@ def compute_pose_metrics(pose_pred, pose_gt):
 
     return mse
 
+def compute_sequence_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
+    ''' 
+    Returns the ATE of the sequence given the predicted pose (target origin) and 
+    gt pose (src1 origin). Does this by converting the pose predictions from target 
+    origin (src1<-target->src2) to src1 origin (src1->target->src2). Uses the pose_gt 
+    to gather the scaling factor and compute final ATE.
+
+    Args:
+        pose: predicted 6DOF with target origin (B,2,6)
+        pose_gt: gt pose matrix with src origin (B,3,3,4)
+    '''
+    poses = get_src1_origin_pose(pose)
+
+    # Compute ATE
+    scale = torch.sum(pose_gt[0,:,:,-1] * poses[:,:,-1]) / torch.sum(poses[:,:,-1] ** 2)
+    pose_dist = torch.linalg.norm((pose_gt[0,:,:,-1] - scale * poses[:,:,-1]).reshape(-1)) 
+    pose_dist /= poses.shape[0]
+    return pose_dist
+
 
 def get_params(model:nn.Module, weight_decay=0.05):
     ''' Return params for optimizer. Applies weight decay to non norm/bias parameters. '''
@@ -228,9 +319,11 @@ def get_params(model:nn.Module, weight_decay=0.05):
     return [{'params': decay, 'weight_decay': weight_decay},
             {'params': no_decay, 'weight_decay': 0.}]
 
+
 def main():
+    log_job_id = args.job_id if not args.evaluate else f'{args.job_id}-test_src1origin'
     logger = MetricLogger(
-        args.save_path, args.job_id, args.batch_size, args.epochs
+        args.save_path, log_job_id, args.batch_size, args.epochs
         )
     logger.log_str(str(args))
 
@@ -239,15 +332,17 @@ def main():
         test_loader = get_test_data_loader(
             args.data_path, args.data_path_local, args.batch_size, args.n_workers
         )
-        # path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
-        # assert os.path.exists(path), f'Bad checkpoint path {path}'
+        path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
+        assert os.path.exists(path), f'Bad checkpoint path: {path}'
 
         pose_net = PoseCNN(args.lambda_e > 0.)
-        # pose_net.load_state_dict(torch.load(path))
+        pose_net.load_state_dict(torch.load(path, map_location=device))
         pose_net.drop_exp()
         pose_net.to(device)
 
-        validate_global(test_loader, pose_net)
+        logger.start_epoch(0)
+        validate_pose(test_loader, pose_net, logger)
+        # validate_global(test_loader, pose_net, logger)
         return
     
     # Load dataloader
