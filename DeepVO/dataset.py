@@ -7,7 +7,7 @@ from streaming import StreamingDataset
 from typing import Callable, Any
 
 def get_training_data_loaders(remote_path, local_path, batch_size, n_workers):
-    train_transforms = transforms
+    train_transforms = None #transforms
     test_transforms = None
 
     train_data = KittiDataset(f'{remote_path}/train', f'{local_path}/train', 
@@ -126,9 +126,6 @@ class KittiDataset(StreamingDataset):
     def _deprocess_img(self, img):
         '''Convert to range [0,256]'''
         return ((img+1)*128).type(torch.int8)
-
-    
-
 
     def _get_multi_scale_intrinsics(self, intrinsics, num_scales):
         pass

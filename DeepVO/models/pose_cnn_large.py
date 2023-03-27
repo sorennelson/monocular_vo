@@ -34,7 +34,7 @@ class PoseCNN(nn.Module):
                 DecoderBlock(128, 64, kernel_size=(3,3)),
                 DecoderBlock(64, 32, kernel_size=(5,5)),
                 DecoderBlock(32, 16, kernel_size=(7,7)),
-                nn.Conv2d(16, 2*self.n_src, (7,7), 1, padding=3),
+                nn.Conv2d(16, self.n_src, (7,7), 1, padding=3),
             )
     
     def drop_exp(self):
@@ -51,11 +51,13 @@ class PoseCNN(nn.Module):
         if self.exp:
             exp = self.exp(enc)
             # Reshape to [B*n_src, 2, H, W]
-            exp = exp.view(-1, 2, *exp.shape[2:])
-            # Softmax explanation per source view
-            exp = nn.functional.softmax(exp, dim=1)
+            # exp = exp.view(-1, 1, *exp.shape[2:])
+            # Sigmoid explanation per source view
+            exp = torch.sigmoid(exp)
+            # exp = nn.functional.softmax(exp, dim=1)
             # Reshape to [B, 2*n_src, H, W]
-            exp = exp.view(src.shape[0], 2*self.n_src, *exp.shape[2:])
+            # exp = exp.view(src.shape[0], 2*self.n_src, *exp.shape[2:])
+            # exp = exp.view(src.shape[0], self.n_src, *exp.shape[2:])
 
         return pose, exp
 

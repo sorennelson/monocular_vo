@@ -234,24 +234,36 @@ def compute_loss(target: torch.Tensor,
     # Explainability regularizer loss
     l_e = 0.
     if args.lambda_e > 0.:
-        exp_loss = nn.CrossEntropyLoss()
+        exp_loss = nn.BCELoss()
         # Reshape to [B*n_src, 2, H, W]
-        exp = exp.view(-1, 2, *exp.shape[2:])
-        exp_target = torch.ones((exp.shape[0], *exp.shape[2:]), 
-                                dtype=torch.long, device=exp.device)
+        # exp = exp.view(-1, 2, *exp.shape[2:])
+        exp_target = torch.ones_like(exp, device=exp.device)
         l_e = exp_loss(exp, exp_target)
-        # Grab explainability prediction
-        exp = exp[:, 1:]
+        # # Grab explainability prediction
+        # exp = exp[:, 1:]
         # Reshape to [B, n_src, H, W]
-        exp = exp.view(-1, 2, *exp.shape[2:])
+        # exp = exp.view(-1, 2, *exp.shape[2:])
+
+    # if args.lambda_e > 0.:
+    #     exp_loss = nn.CrossEntropyLoss()
+    #     # Reshape to [B*n_src, 2, H, W]
+    #     exp = exp.view(-1, 2, *exp.shape[2:])
+    #     exp_target = torch.ones((exp.shape[0], *exp.shape[2:]), 
+    #                             dtype=torch.long, device=exp.device)
+    #     l_e = exp_loss(exp, exp_target)
+    #     # Grab explainability prediction
+    #     exp = exp[:, 1:]
+    #     # Reshape to [B, n_src, H, W]
+    #     exp = exp.view(-1, 2, *exp.shape[2:])
+
 
     # Smooth loss
     l_s = compute_smooth_loss(depth, nn.L1Loss())
 
     # View synthesis loss per source
     view_synth_loss = nn.L1Loss(reduction='none')
-    proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam)
-    proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam)
+    proj_1 = project_warp(src[:,:1], 1/depth, pose[:,:1], cam)
+    proj_2 = project_warp(src[:,1:], 1/depth, pose[:,1:], cam)
     l_vs1 = view_synth_loss(proj_1, target) 
     l_vs2 = view_synth_loss(proj_2, target)
     if args.lambda_e > 0.:
@@ -259,6 +271,7 @@ def compute_loss(target: torch.Tensor,
         l_vs = torch.mean(exp[:,:1]*l_vs1) + torch.mean(exp[:,1:]*l_vs2)
     else:
         l_vs = torch.mean(l_vs1) + torch.mean(l_vs2)
+
     return l_vs + args.lambda_s * l_s + args.lambda_e * l_e
 
 def compute_pose_metrics(pose_pred, pose_gt):
