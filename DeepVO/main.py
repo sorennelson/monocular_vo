@@ -24,6 +24,8 @@ parser.add_argument('--log_frequency', type=int, default=250,
 parser.add_argument('--skip', action='store_true', 
                     help='Whether to use skip connections in Depth network.')
 parser.add_argument('--lambda_s', type=float, default=0.5, help='Smooth loss scalar.')
+parser.add_argument('--smooth_disp', action='store_true', 
+                    help='If true applies smoothness loss to the disparity, otherwise to the depth.')
 parser.add_argument('--lambda_e', type=float, default=0.2, help='Explainability loss scalar.')
 parser.add_argument('--learning_rate', type=float, default=0.0002, help='Learning rate.')
 parser.add_argument('--decay', type=float, default=0.05, help='Weight decay.')
@@ -55,10 +57,10 @@ def train(data_loader:DataLoader,
         cam = cam.to(device)
         pose_gt = pose_gt.to(device)
          
-        depth = depth_net(target)
+        disp = depth_net(target)
         pose, exp = pose_net(target, src)
 
-        loss = compute_loss(target, src, depth, pose, exp, cam)
+        loss = compute_loss(target, src, disp, pose, exp, cam)
         pose_dist = compute_pose_metrics(pose, pose_gt)
 
         opt.zero_grad()
@@ -87,10 +89,10 @@ def validate(data_loader:DataLoader,
             cam = cam.to(device)
             pose_gt = pose_gt.to(device)
             
-            depth = depth_net(target)
+            disp = depth_net(target)
             pose, exp = pose_net(target, src)
 
-            loss = compute_loss(target, src, depth, pose, exp, cam)
+            loss = compute_loss(target, src, disp, pose, exp, cam)
             pose_dist = compute_pose_metrics(pose, pose_gt)
 
             logger.update(len(target), loss.item(), pose_dist)
@@ -215,7 +217,7 @@ def validate_pose(data_loader:DataLoader, pose_net:PoseCNN, logger:MetricLogger)
 
 def compute_loss(target: torch.Tensor, 
                  src: torch.Tensor, 
-                 depth: torch.Tensor, 
+                 disp: torch.Tensor, 
                  pose: torch.Tensor, 
                  exp: torch.Tensor, 
                  cam: torch.Tensor):
@@ -226,44 +228,28 @@ def compute_loss(target: torch.Tensor,
     Args:
         target: Target images (B,1,H,W)
         src: Source images (B,n_src,H,W)
-        depth: Depth map prediction (B,1,H,W)
+        disp: Disparity prediction (B,1,H,W)
         pose: 6DOF pose predictions as target->src (B,n_src,6)
         exp: Explainability prediction probabilities (B,n_src*2,H,W)
         cam: Camera intrinsics (B,3,3)
     '''
+    depth = 1./disp
+
     # Explainability regularizer loss
     l_e = 0.
     if args.lambda_e > 0.:
         exp_loss = nn.BCELoss()
-        # Reshape to [B*n_src, 2, H, W]
-        # exp = exp.view(-1, 2, *exp.shape[2:])
         exp_target = torch.ones_like(exp, device=exp.device)
         l_e = exp_loss(exp, exp_target)
-        # # Grab explainability prediction
-        # exp = exp[:, 1:]
-        # Reshape to [B, n_src, H, W]
-        # exp = exp.view(-1, 2, *exp.shape[2:])
-
-    # if args.lambda_e > 0.:
-    #     exp_loss = nn.CrossEntropyLoss()
-    #     # Reshape to [B*n_src, 2, H, W]
-    #     exp = exp.view(-1, 2, *exp.shape[2:])
-    #     exp_target = torch.ones((exp.shape[0], *exp.shape[2:]), 
-    #                             dtype=torch.long, device=exp.device)
-    #     l_e = exp_loss(exp, exp_target)
-    #     # Grab explainability prediction
-    #     exp = exp[:, 1:]
-    #     # Reshape to [B, n_src, H, W]
-    #     exp = exp.view(-1, 2, *exp.shape[2:])
-
 
     # Smooth loss
-    l_s = compute_smooth_loss(depth, nn.L1Loss())
+    smooth_inp = disp if args.smooth_disp else depth
+    l_s = compute_smooth_loss(smooth_inp, nn.L1Loss())
 
     # View synthesis loss per source
     view_synth_loss = nn.L1Loss(reduction='none')
-    proj_1 = project_warp(src[:,:1], 1/depth, pose[:,:1], cam)
-    proj_2 = project_warp(src[:,1:], 1/depth, pose[:,1:], cam)
+    proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam)
+    proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam)
     l_vs1 = view_synth_loss(proj_1, target) 
     l_vs2 = view_synth_loss(proj_2, target)
     if args.lambda_e > 0.:
@@ -355,7 +341,6 @@ def main():
 
         logger.start_epoch(0)
         validate_pose(test_loader, pose_net, logger)
-        # validate_global(test_loader, pose_net, logger)
         return
     
     # Load dataloader

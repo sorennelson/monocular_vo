@@ -26,7 +26,7 @@ class PoseCNN(nn.Module):
             nn.AdaptiveAvgPool2d((1,1))
         )
         # Explainability Mask head
-        self.exp = None
+        self.exp = nn.Identity()
         if exp:
             self.exp = nn.Sequential(
                 DecoderBlock(256, 256, kernel_size=(3,3)),
@@ -35,30 +35,19 @@ class PoseCNN(nn.Module):
                 DecoderBlock(64, 32, kernel_size=(5,5)),
                 DecoderBlock(32, 16, kernel_size=(7,7)),
                 nn.Conv2d(16, self.n_src, (7,7), 1, padding=3),
+                nn.Sigmoid()
             )
     
     def drop_exp(self):
         ''' Remove explainability stem for inference. '''
-        self.exp = None
+        self.exp = nn.Identity()
 
     def forward(self, target, src):
         x = torch.cat([target, src], axis=1)
         enc = self.enc(x)
         # Small constant scale from paper
         pose = 0.01 * self.pose(enc).view(-1,self.n_src,6)
-
-        exp = None
-        if self.exp:
-            exp = self.exp(enc)
-            # Reshape to [B*n_src, 2, H, W]
-            # exp = exp.view(-1, 1, *exp.shape[2:])
-            # Sigmoid explanation per source view
-            exp = torch.sigmoid(exp)
-            # exp = nn.functional.softmax(exp, dim=1)
-            # Reshape to [B, 2*n_src, H, W]
-            # exp = exp.view(src.shape[0], 2*self.n_src, *exp.shape[2:])
-            # exp = exp.view(src.shape[0], self.n_src, *exp.shape[2:])
-
+        exp = self.exp(enc)
         return pose, exp
 
 class EncoderBlock(nn.Module):
