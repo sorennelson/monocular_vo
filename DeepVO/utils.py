@@ -208,6 +208,9 @@ def get_src1_origin_pose(pose: torch.Tensor):
     Args:
         pose: predicted 6DOF with target origin (B,2,6)
     '''
+
+    # TODO:
+    
     # Euler to rotation matrices [R|t]
     pose_src1 = get_pose_mat(pose[:,:1])
     pose_src2 = get_pose_mat(pose[:,1:])

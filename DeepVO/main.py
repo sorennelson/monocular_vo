@@ -6,6 +6,7 @@ from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat,
 import os, argparse
 import torch
 import torch.nn as nn
+import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader
 
 parser = argparse.ArgumentParser()
@@ -31,6 +32,7 @@ parser.add_argument('--learning_rate', type=float, default=0.0002, help='Learnin
 parser.add_argument('--decay', type=float, default=0.05, help='Weight decay.')
 parser.add_argument('--epochs', type=int, default=10, help='Training epochs.')
 parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
+parser.add_argument('--n_src', type=int, default=2, help='Number of source images.')
 
 parser.add_argument('--evaluate', action='store_true', 
                     help='Evaluate the pretrained model stored in save_path on the test set.')
@@ -60,7 +62,7 @@ def train(data_loader:DataLoader,
         disp = depth_net(target)
         pose, exp = pose_net(target, src)
 
-        loss = compute_loss(target, src, disp, pose, exp, cam)
+        loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
         pose_dist = compute_pose_metrics(pose, pose_gt)
 
         opt.zero_grad()
@@ -92,7 +94,7 @@ def validate(data_loader:DataLoader,
             disp = depth_net(target)
             pose, exp = pose_net(target, src)
 
-            loss = compute_loss(target, src, disp, pose, exp, cam)
+            loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
             pose_dist = compute_pose_metrics(pose, pose_gt)
 
             logger.update(len(target), loss.item(), pose_dist)
@@ -214,13 +216,43 @@ def validate_pose(data_loader:DataLoader, pose_net:PoseCNN, logger:MetricLogger)
 #     # print(seq_poses_2[10][:3])
 #     # print(seq_poses_2[10][-3:])
 
+def compute_multi_scale_loss(target: torch.Tensor, 
+                             src: torch.Tensor, 
+                             disp: torch.Tensor, 
+                             pose: torch.Tensor, 
+                             exp: torch.Tensor, 
+                             cam: torch.Tensor):
+    n_scales = 4
+    h, w = target.shape[2], target.shape[3]
+    loss = 0.
+    for s in range(n_scales):
+        # Reshape target and src_images to correct scale
+        target_s = TF.resize(target, (h//(2**s), w//(2**s)))
+        src_s = TF.resize(src, (h//(2**s), w//(2**s)))
 
-def compute_loss(target: torch.Tensor, 
-                 src: torch.Tensor, 
-                 disp: torch.Tensor, 
-                 pose: torch.Tensor, 
-                 exp: torch.Tensor, 
-                 cam: torch.Tensor):
+        # update smooth weight and pass in (adjust to pass in loss scalars?)
+        loss += compute_single_scale_loss(
+            target_s, 
+            src_s, 
+            disp[s], 
+            pose,
+            exp[s], 
+            cam[:,s], 
+            args.lambda_s/(2**s), 
+            args.lambda_e
+        )
+
+    return loss
+
+
+def compute_single_scale_loss(target: torch.Tensor, 
+                              src: torch.Tensor, 
+                              disp: torch.Tensor, 
+                              pose: torch.Tensor, 
+                              exp: torch.Tensor, 
+                              cam: torch.Tensor,
+                              lambda_s: int,
+                              lambda_e: int):
     ''' 
     Returns loss as in "Unsupervised Learning of Depth and Ego-Motion from Video".
     `L = L_viewsynthesis + lambda_s * L_smooth + lambda_e * L_reg.`
@@ -232,6 +264,8 @@ def compute_loss(target: torch.Tensor,
         pose: 6DOF pose predictions as target->src (B,n_src,6)
         exp: Explainability prediction probabilities (B,n_src*2,H,W)
         cam: Camera intrinsics (B,3,3)
+        lambda_s: Smooth loss scalar
+        lambda_e: Explainability loss scalar
     '''
     depth = 1./disp
 
@@ -248,19 +282,29 @@ def compute_loss(target: torch.Tensor,
 
     # View synthesis loss per source
     view_synth_loss = nn.L1Loss(reduction='none')
-    proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam)
-    proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam)
-    l_vs1 = view_synth_loss(proj_1, target) 
-    l_vs2 = view_synth_loss(proj_2, target)
-    if args.lambda_e > 0.:
-        # Apply explainability mask to view synthesis loss
-        l_vs = torch.mean(exp[:,:1]*l_vs1) + torch.mean(exp[:,1:]*l_vs2)
-    else:
-        l_vs = torch.mean(l_vs1) + torch.mean(l_vs2)
+    l_vs = 0.
+    for i in range(src.shape[1]):
+        proj = project_warp(src[:,i:i+1], depth, pose[:,i:i+1], cam)
+        l_vsi = view_synth_loss(proj, target) 
+        if lambda_e > 0.:
+            # Apply explainability mask to view synthesis loss
+            l_vs += torch.mean(exp[:,i:i+1]*l_vsi) 
+        else:
+            l_vs += torch.mean(l_vsi)
 
-    return l_vs + args.lambda_s * l_s + args.lambda_e * l_e
+    # proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam)
+    # proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam)
+    # l_vs1 = view_synth_loss(proj_1, target) 
+    # l_vs2 = view_synth_loss(proj_2, target)
+    # if args.lambda_e > 0.:
+    #     # Apply explainability mask to view synthesis loss
+    #     l_vs = torch.mean(exp[:,:1]*l_vs1) + torch.mean(exp[:,1:]*l_vs2)
+    # else:
+    #     l_vs = torch.mean(l_vs1) + torch.mean(l_vs2)
 
-def compute_pose_metrics(pose_pred, pose_gt):
+    return l_vs + lambda_s * l_s + lambda_e * l_e
+
+def compute_pose_metrics(pose_pred: torch.Tensor, pose_gt: torch.Tensor):
     '''
       Returns the pose translation MSE as relative translation from 
       Target->Src (target origin). 
@@ -271,19 +315,24 @@ def compute_pose_metrics(pose_pred, pose_gt):
         pose_gt: Ground truth pose matrix [R|t] (B,n_src,3,4)
     '''
     # Euler to rotation matrix [R|t] to match gt
-    pose_pred_src1 = get_pose_mat(pose_pred[:,:1])
-    pose_pred_src2 = get_pose_mat(pose_pred[:,1:])
-    pose_pred = torch.stack([pose_pred_src1, pose_pred_src2], dim=1)
-    # B,2,3,4 -> 2B,3,4 (2 comes from 2 src views)
-    pose_pred = pose_pred.view(-1, 3, 4) 
+    pose_preds = [get_pose_mat(pose_pred[:,i:i+1]) \
+                  for i in range(pose_pred.shape[1])]
+    pose_preds = torch.stack(pose_preds, dim=1)
+
+    # pose_pred_src1 = get_pose_mat(pose_pred[:,:1])
+    # pose_pred_src2 = get_pose_mat(pose_pred[:,1:])
+    # pose_pred = torch.stack([pose_pred_src1, pose_pred_src2], dim=1)
+
+    # B,n_src,3,4 -> B*n_src,3,4 
+    pose_preds = pose_preds.view(-1, 3, 4) 
     pose_gt = pose_gt.view(-1, 3, 4)
 
     # Translation mse
-    scale = torch.sum(pose_gt[:,:,-1] * pose_pred[:,:,-1], dim=1)
-    scale /= torch.sum(pose_pred[:,:,-1] ** 2, dim=1)
+    scale = torch.sum(pose_gt[:,:,-1] * pose_preds[:,:,-1], dim=1)
+    scale /= torch.sum(pose_preds[:,:,-1] ** 2, dim=1)
     scale = scale.unsqueeze(1)
-    alignment_error = pose_pred[:,:,-1] * scale - pose_gt[:,:,-1]
-    mse = torch.sum(alignment_error ** 2)/len(pose_pred)
+    alignment_error = pose_preds[:,:,-1] * scale - pose_gt[:,:,-1]
+    mse = torch.sum(alignment_error ** 2)/len(pose_preds)
 
     return mse
 
@@ -329,13 +378,13 @@ def main():
     # Load pretrained model and test
     if args.evaluate:
         test_loader = get_test_data_loader(
-            args.data_path, args.data_path_local, args.batch_size, args.n_workers
+            args.data_path, args.data_path_local, args.batch_size, args.n_src, args.n_workers
         )
-        path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
-        assert os.path.exists(path), f'Bad checkpoint path: {path}'
+        # path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
+        # assert os.path.exists(path), f'Bad checkpoint path: {path}'
 
-        pose_net = PoseCNN(args.lambda_e > 0.)
-        pose_net.load_state_dict(torch.load(path, map_location=device))
+        pose_net = PoseCNN(args.lambda_e > 0., args.n_src)
+        # pose_net.load_state_dict(torch.load(path, map_location=device))
         pose_net.drop_exp()
         pose_net.to(device)
 
@@ -345,12 +394,12 @@ def main():
     
     # Load dataloader
     train_loader, test_loader = get_training_data_loaders(
-        args.data_path, args.data_path_local, args.batch_size, args.n_workers
+        args.data_path, args.data_path_local, args.batch_size, args.n_src, args.n_workers
     )
 
     # Load models
     depth_net = DepthCNN(args.skip)
-    pose_net = PoseCNN(args.lambda_e > 0.)
+    pose_net = PoseCNN(args.lambda_e > 0., args.n_src)
     depth_net = depth_net.to(device)
     pose_net = pose_net.to(device)
 
