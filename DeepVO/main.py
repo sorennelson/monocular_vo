@@ -63,7 +63,9 @@ def train(data_loader:DataLoader,
         pose, exp = pose_net(target, src)
 
         loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
-        pose_dist = compute_pose_metrics(pose, pose_gt)
+        with torch.no_grad():
+            # pose_dist = compute_pose_metrics(pose, pose_gt)
+            pose_dist = compute_sequence_ATE(pose, pose_gt)
 
         opt.zero_grad()
         loss.backward()
@@ -95,7 +97,8 @@ def validate(data_loader:DataLoader,
             pose, exp = pose_net(target, src)
 
             loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
-            pose_dist = compute_pose_metrics(pose, pose_gt)
+            # pose_dist = compute_pose_metrics(pose, pose_gt)
+            pose_dist = compute_sequence_ATE(pose, pose_gt)
 
             logger.update(len(target), loss.item(), pose_dist)
         
@@ -333,7 +336,6 @@ def compute_pose_metrics(pose_pred: torch.Tensor, pose_gt: torch.Tensor):
     scale = scale.unsqueeze(1)
     alignment_error = pose_preds[:,:,-1] * scale - pose_gt[:,:,-1]
     mse = torch.sum(alignment_error ** 2)/len(pose_preds)
-
     return mse
 
 def compute_sequence_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
@@ -344,16 +346,22 @@ def compute_sequence_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
     to gather the scaling factor and compute final ATE.
 
     Args:
-        pose: predicted 6DOF with target origin (B,2,6)
-        pose_gt: gt pose matrix with src origin (B,3,3,4)
+        pose: predicted 6DOF with target origin (B,n_src,6)
+        pose_gt: gt pose matrix with src origin (B,n_src+1,3,4)
     '''
     poses = get_src1_origin_pose(pose)
 
     # Compute ATE
-    scale = torch.sum(pose_gt[0,:,:,-1] * poses[:,:,-1]) / torch.sum(poses[:,:,-1] ** 2)
-    pose_dist = torch.linalg.norm((pose_gt[0,:,:,-1] - scale * poses[:,:,-1]).reshape(-1)) 
-    pose_dist /= poses.shape[0]
-    return pose_dist
+    seq_len = pose_gt.shape[1]
+    ATE = 0.
+    for i in range(len(poses)):
+        scale = torch.sum(pose_gt[i,:,:,-1] * poses[i,:,:,-1]) 
+        scale /= torch.sum(poses[i,:,:,-1] ** 2)
+        samp_ATE = torch.linalg.norm((pose_gt[i,:,:,-1] - scale * poses[:,:,:,-1]).reshape(-1)) 
+        samp_ATE /= seq_len
+        ATE += samp_ATE
+    print(ATE / pose_gt.shape[0])
+    return ATE / pose_gt.shape[0]
 
 
 def get_params(model:nn.Module, weight_decay=0.05):

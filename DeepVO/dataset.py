@@ -6,38 +6,40 @@ from torch.utils.data import DataLoader
 from streaming import StreamingDataset
 from typing import Callable, Any
 
-def get_training_data_loaders(remote_path, local_path, batch_size, n_src, n_workers):
+def get_training_data_loaders(remote_path, local_path, train_batch_size, n_src, n_workers):
     train_transforms = None #transforms
     test_transforms = None
 
     train_data = KittiDataset(f'{remote_path}/train', f'{local_path}/train', 
                               shuffle=True, 
-                              batch_size=batch_size, 
+                              batch_size=train_batch_size, 
                               n_src=n_src,
-                              transforms=train_transforms)
+                              transforms=train_transforms,
+                              src1_origin=True)
     test_data = KittiDataset(f'{remote_path}/val', f'{local_path}/val', 
                              shuffle=False, 
-                             batch_size=batch_size, 
+                             batch_size=1, 
                              n_src=n_src,
-                             transforms=test_transforms)
+                             transforms=test_transforms,
+                             src1_origin=True)
     
-    train_loader = DataLoader(train_data, batch_size=batch_size, 
+    train_loader = DataLoader(train_data, batch_size=train_batch_size, 
                               num_workers=n_workers, pin_memory=True)
-    test_loader = DataLoader(test_data, batch_size=batch_size,
+    test_loader = DataLoader(test_data, batch_size=1,
                              num_workers=n_workers, pin_memory=True)
     
     return train_loader, test_loader
 
 
-def get_test_data_loader(remote_path, local_path, batch_size, n_src, n_workers):
+def get_test_data_loader(remote_path, local_path, n_src, n_workers):
     test_data = KittiDataset(f'{remote_path}/test', f'{local_path}/test', 
                               shuffle=False, 
-                              batch_size=batch_size, 
+                              batch_size=1, 
                               n_src=n_src,
                               transforms=None,
                               src1_origin=True)
     
-    test_loader = DataLoader(test_data, batch_size=batch_size,
+    test_loader = DataLoader(test_data, batch_size=1,
                              num_workers=n_workers, pin_memory=True)
     
     return test_loader
@@ -164,46 +166,78 @@ class KittiDataset(StreamingDataset):
     def _extract_target_origin_pose_from_sequence(self, pose_seq):
         pose_seq = pose_seq.split('|')
 
-        n_pre = self.n_src//2
-        poses = torch.zeros(self.n_src,3,4)
-        # pose_pre
-        for i in range(n_pre):
-            # Unpack global pose (poses are stored as [seq, idx, pose])
-            pose_src = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
-            pose_src = torch.tensor(pose_src.astype(np.float32))
-            poses[i] = pose_src
-        # pose_post
-        for i in range(n_pre+1,self.n_src+1):
-            # Unpack global pose (poses are stored as [seq, idx, pose])
-            pose_src = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
-            pose_src = torch.tensor(pose_src.astype(np.float32))
-            poses[i-1] = pose_src
-
-        pose_target = np.array(pose_seq[n_pre].split(',')[2:]).reshape(3,4)
-        pose_target = torch.tensor(pose_target.astype(np.float32))
-        R_target, t_target = pose_target[:,:-1], pose_target[:,-1:]
-        
-        R_src, t_src = poses[:,:,:-1], poses[:,:,-1:]
-        poses = torch.cat([
-            R_src.transpose(1,2) @ R_target, R_src.transpose(1,2) @ (t_target - t_src)
-            ], dim=2)
-
-        return poses
-    
-    def _extract_src1_orgin_pose_from_sequence(self, pose_seq):
-        pose_seq = pose_seq.split('|')
-
-        poses = torch.zeros(self.n_src+1,3,4)
-        # pose_pre
+        poses = torch.zeros(self.n_src+1,4,4)
         for i in range(self.n_src+1):
             # Unpack global pose (poses are stored as [seq, idx, pose])
             pose = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
             pose = torch.tensor(pose.astype(np.float32))
-            poses[i] = pose
+            poses[i] = torch.cat([pose, torch.tensor([[0,0,0,1]])], dim=0)
 
-        # Src_1 as origin
-        R_src1, t_src1 = poses[0,:,:-1], poses[0,:,-1]
-        poses[:,:,-1] -= t_src1
-        poses = torch.linalg.inv(R_src1) @ poses
+        n_pre = self.n_src // 2
+        target_orgin_poses = torch.zeros(self.n_src,3,4)
+        target_pose_inv = torch.linalg.inv(poses[n_pre])
+        for i, pose in enumerate(poses):
+            if i == n_pre: continue
+            j = i if i < n_pre else i-1
+            target_orgin_poses[j] = (target_pose_inv @ pose)[:-1]
 
-        return poses
+        return target_orgin_poses
+    
+        # pose_seq = pose_seq.split('|')
+
+        # n_pre = self.n_src//2
+        # poses = torch.zeros(self.n_src,3,4)
+        # # pose_pre
+        # for i in range(n_pre):
+        #     # Unpack global pose (poses are stored as [seq, idx, pose])
+        #     pose_src = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
+        #     pose_src = torch.tensor(pose_src.astype(np.float32))
+        #     poses[i] = pose_src
+        # # pose_post
+        # for i in range(n_pre+1,self.n_src+1):
+        #     # Unpack global pose (poses are stored as [seq, idx, pose])
+        #     pose_src = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
+        #     pose_src = torch.tensor(pose_src.astype(np.float32))
+        #     poses[i-1] = pose_src
+
+        # pose_target = np.array(pose_seq[n_pre].split(',')[2:]).reshape(3,4)
+        # pose_target = torch.tensor(pose_target.astype(np.float32))
+        # R_target, t_target = pose_target[:,:-1], pose_target[:,-1:]
+        
+        # R_src, t_src = poses[:,:,:-1], poses[:,:,-1:]
+        # poses = torch.cat([
+        #     R_src.transpose(1,2) @ R_target, R_src.transpose(1,2) @ (t_target - t_src)
+        #     ], dim=2)
+
+        # return poses
+    
+    # def _extract_src1_orgin_pose_from_sequence(self, pose_seq):
+    #     pose_seq = pose_seq.split('|')
+
+    #     poses = torch.zeros(self.n_src+1,3,4)
+    #     for i in range(self.n_src+1):
+    #         # Unpack global pose (poses are stored as [seq, idx, pose])
+    #         pose = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
+    #         pose = torch.tensor(pose.astype(np.float32))
+    #         poses[i] = pose
+
+    #     # Src_1 as origin
+    #     R_src1, t_src1 = poses[0,:,:-1], poses[0,:,-1]
+    #     poses[:,:,-1] -= t_src1
+    #     poses = torch.linalg.inv(R_src1) @ poses
+
+    #     return poses
+    
+    def _extract_src1_orgin_pose_from_sequence(self, pose_seq):
+        pose_seq = pose_seq.split('|')
+
+        poses = torch.zeros(self.n_src+1,4,4)
+        for i in range(self.n_src+1):
+            # Unpack global pose (poses are stored as [seq, idx, pose])
+            pose = np.array(pose_seq[i].split(',')[2:]).reshape(3,4)
+            pose = torch.tensor(pose.astype(np.float32))
+            poses[i] = torch.cat([pose, torch.tensor([[0,0,0,1]])], dim=0)
+        
+        # Convert to src1 origin
+        src1_origin_poses = (torch.linalg.inv(poses[0]) @ poses)[:,:-1]
+        return src1_origin_poses

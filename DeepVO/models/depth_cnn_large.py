@@ -5,9 +5,7 @@ import torchvision.transforms.functional as TF
 
 
 class DepthCNN(nn.Module):
-    ''' 
-    Note: Not using multi-scale output
-    '''
+    
     def __init__(self, skip=False, alpha=10, beta=0.01):
         super().__init__()
 

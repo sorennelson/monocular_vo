@@ -113,11 +113,25 @@ def project_warp(src:torch.Tensor,
     # I_s(p_t)
     return bilinear_sampling(src, p_s)
 
+def get_zeros(shape, device):
+    return torch.zeros(shape, device=device)
+
+def get_ones(shape, device):
+    return torch.ones(shape, device=device)
+
+def get_pose_pad(device, batch_size=1):
+    x = get_zeros((batch_size,1,4), device)
+    x[:,0,-1] = 1
+    return x
+
 def get_pose_mat(pose_6dof):
     ''' 
     Returns pose matrix [R|t] of shape (B,3,4) using translation 
     and euler angle values from pose_6dof (t_x, t_y, t_z, alpha, beta, gamma).
     '''
+    device = pose_6dof.device
+    B = pose_6dof.shape[0]
+
     # Extract euler angles
     alpha = torch.clip(pose_6dof[:,0,3], -torch.pi, torch.pi).view(-1,1,1,1)
     beta = torch.clip(pose_6dof[:,0,4], -torch.pi, torch.pi).view(-1,1,1,1)
@@ -125,23 +139,30 @@ def get_pose_mat(pose_6dof):
     cos_a, sin_a = torch.cos(alpha), torch.sin(alpha)
     cos_b, sin_b = torch.cos(beta), torch.sin(beta)
     cos_g, sin_g = torch.cos(gamma), torch.sin(gamma)
-    zeros = torch.zeros((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
-    ones = torch.ones((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
+    # zeros = torch.zeros((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
+    # ones = torch.ones((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
+
     # Compute yaw, pitch, and roll
     R_z = torch.cat([
-        torch.cat([cos_g, -sin_g, zeros], axis=3),
-        torch.cat([sin_g, cos_g, zeros], axis=3),
-        torch.cat([zeros, zeros, ones], axis=3)
+        torch.cat([cos_g, -sin_g, get_zeros((B,1,1,1), device)], axis=3),
+        torch.cat([sin_g, cos_g, get_zeros((B,1,1,1), device)], axis=3),
+        torch.cat([get_zeros((B,1,1,1), device), 
+                   get_zeros((B,1,1,1), device), 
+                   get_ones((B,1,1,1), device)], axis=3)
     ], axis=2)
     R_y = torch.cat([
-        torch.cat([cos_b, zeros, sin_b], axis=3),
-        torch.cat([zeros, ones, zeros], axis=3),
-        torch.cat([-sin_b, zeros, cos_b], axis=3)
+        torch.cat([cos_b, get_zeros((B,1,1,1), device), sin_b], axis=3),
+        torch.cat([get_zeros((B,1,1,1), device), 
+                   get_ones((B,1,1,1), device), 
+                   get_zeros((B,1,1,1), device)], axis=3),
+        torch.cat([-sin_b, get_zeros((B,1,1,1), device), cos_b], axis=3)
     ], axis=2)
     R_x = torch.cat([
-        torch.cat([ones, zeros, zeros], axis=3),
-        torch.cat([zeros, cos_a, -sin_a], axis=3),
-        torch.cat([zeros, sin_a, cos_a], axis=3)
+        torch.cat([get_ones((B,1,1,1), device), 
+                   get_zeros((B,1,1,1), device), 
+                   get_zeros((B,1,1,1), device)], axis=3),
+        torch.cat([get_zeros((B,1,1,1), device), cos_a, -sin_a], axis=3),
+        torch.cat([get_zeros((B,1,1,1), device), sin_a, cos_a], axis=3)
     ], axis=2)
     # Final rotation matrix
     R = (R_z @ R_y @ R_x).squeeze(1)
@@ -209,7 +230,7 @@ def get_src1_origin_pose(pose: torch.Tensor):
         pose: predicted 6DOF with target origin (B,2,6)
     '''
 
-    # TODO:
+    # Assuming batch size 1 right now
     
     # Euler to rotation matrices [R|t]
     pose_src1 = get_pose_mat(pose[:,:1])
@@ -217,18 +238,42 @@ def get_src1_origin_pose(pose: torch.Tensor):
     # Origin pose
     pose_target = torch.eye(4, device=pose.device)[:-1].unsqueeze(0)
     pose_target = pose_target.repeat(pose.shape[0],1,1)
+    
+    return get_src1_origin_pose_tf(pose_src1.clone(), pose_target.clone(), pose_src2.clone())
 
-    # Convert rotation to src1 origin (R^(-1)_1 @ R)
-    R_src1_inv = torch.linalg.inv(pose_src1[:,:,:-1])
-    R = torch.cat([
-        pose_target[:,:,:-1], R_src1_inv, R_src1_inv @ pose_src2[:,:,:-1]
-    ], dim=0)
+    # # Convert rotation to src1 origin (R^(-1)_1 @ R)
+    # R_src1_inv = torch.linalg.inv(pose_src1[:,:,:-1])
+    # R = torch.cat([
+    #     pose_target[:,:,:-1], R_src1_inv, R_src1_inv @ pose_src2[:,:,:-1]
+    # ], dim=0)
 
-    # Convert translation to src1 origin
-    t_target = pose_src1[:,:,-1:]
-    t_src2 = t_target + pose_src1[:,:,:-1] @ pose_src2[:,:,:-1] @ pose_src2[:,:,-1:]
-    t = torch.cat([
-        pose_target[:,:,-1:], t_target, t_src2
-    ], dim=0)
+    # # Convert translation to src1 origin
+    # t_target = pose_src1[:,:,-1:]
+    # t_src2 = t_target + pose_src1[:,:,:-1] @ pose_src2[:,:,:-1] @ pose_src2[:,:,-1:]
+    # t = torch.cat([
+    #     pose_target[:,:,-1:], t_target, t_src2
+    # ], dim=0)
 
-    return torch.cat([R, t], dim=-1)
+    # orig = torch.cat([R, t], dim=-1).unsqueeze(0)
+    # return orig
+
+
+def get_src1_origin_pose_tf(pose_src1, pose_target, pose_src2):
+    ''' 
+    (B,3,4)
+    '''
+    device = pose_src1.device
+    B = pose_src1.shape[0]
+    # (B,3,4,4)
+    poses = torch.stack([
+        torch.cat([pose_src1, get_pose_pad(device, B)], dim=1),
+        torch.cat([pose_target, get_pose_pad(device, B)], dim=1),
+        torch.cat([pose_src2, get_pose_pad(device, B)], dim=1)
+    ], dim=1)
+    
+    # (B,1,4,4)
+    fp = torch.cat([pose_src1, get_pose_pad(device, B)], dim=1).unsqueeze(1)
+
+    src1_origin_pose = (fp @ torch.linalg.inv(poses))[:,:,:-1]
+    return src1_origin_pose
+    
