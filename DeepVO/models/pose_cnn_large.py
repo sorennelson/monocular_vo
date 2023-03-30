@@ -59,7 +59,7 @@ class PoseCNN(nn.Module):
         # pose = 0.01 * self.pose(enc).view(-1,self.n_src,6)
         pose = 0.01 * self.pose(enc).mean((2,3)).view(-1,self.n_src,6)
         
-        exp = None
+        exp = (None, None, None, None)
         if self.exp:
             exp5 = self.exp5(enc)
             exp4 = self.exp4(exp5)
@@ -81,7 +81,7 @@ class EncoderBlock(nn.Module):
         self.block = nn.Sequential(OrderedDict([
             ('conv', nn.Conv2d(in_channels, out_channels, kernel_size, 
                                stride, padding=(kernel_size[0]-1)//2)),
-            ('norm', nn.BatchNorm2d(out_channels)),
+            # ('norm', nn.BatchNorm2d(out_channels)),
             ('relu', nn.ReLU(inplace=True))
         ]))
 
@@ -95,7 +95,7 @@ class DecoderBlock(nn.Module):
         self.block = nn.Sequential(OrderedDict([
             ('conv', nn.ConvTranspose2d(in_channels, out_channels, kernel_size, 
                                         stride=2, padding=1, output_padding=1)),
-            ('norm', nn.BatchNorm2d(out_channels)),
+            # ('norm', nn.BatchNorm2d(out_channels)),
             ('relu', nn.ReLU(inplace=True))
         ]))
 

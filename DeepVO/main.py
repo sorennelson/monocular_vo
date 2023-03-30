@@ -1,7 +1,7 @@
 from dataset import get_training_data_loaders, get_test_data_loader
 from models.depth_cnn_large import DepthCNN
 from models.pose_cnn_large import PoseCNN
-from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat, get_src1_origin_pose
+from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat, get_src1_origin_pose, inverse_warp
 
 import os, argparse
 import torch
@@ -33,6 +33,8 @@ parser.add_argument('--decay', type=float, default=0.05, help='Weight decay.')
 parser.add_argument('--epochs', type=int, default=10, help='Training epochs.')
 parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
 parser.add_argument('--n_src', type=int, default=2, help='Number of source images.')
+parser.add_argument('--n_scales', type=int, default=4, 
+                    help='Number of image scales to use when training.')
 
 parser.add_argument('--evaluate', action='store_true', 
                     help='Evaluate the pretrained model stored in save_path on the test set.')
@@ -64,8 +66,7 @@ def train(data_loader:DataLoader,
 
         loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
         with torch.no_grad():
-            # pose_dist = compute_pose_metrics(pose, pose_gt)
-            pose_dist = compute_sequence_ATE(pose, pose_gt)
+            pose_dist = compute_snippet_ATE(pose, pose_gt)
 
         opt.zero_grad()
         loss.backward()
@@ -97,8 +98,7 @@ def validate(data_loader:DataLoader,
             pose, exp = pose_net(target, src)
 
             loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
-            # pose_dist = compute_pose_metrics(pose, pose_gt)
-            pose_dist = compute_sequence_ATE(pose, pose_gt)
+            pose_dist = compute_snippet_ATE(pose, pose_gt)
 
             logger.update(len(target), loss.item(), pose_dist)
         
@@ -117,107 +117,12 @@ def validate_pose(data_loader:DataLoader, pose_net:PoseCNN, logger:MetricLogger)
 
             pose, _ = pose_net(target, src)
 
-            pose_dist = compute_sequence_ATE(pose, pose_gt)
+            pose_dist = compute_snippet_ATE(pose, pose_gt)
 
             logger.update(len(target), 0., pose_dist)
         
     logger.log_epoch_stats(train=False)
 
-# def validate_global(data_loader:DataLoader, pose_net:PoseCNN, logger:MetricLogger):
-    
-#     # Indexes may be out of order so loop through to grab sequences and range of indexes
-#     seq_max = {}
-#     for i, (_, _, _, (pose_gt, pose_idx)) in enumerate(data_loader):
-#         for b in range(len(pose_idx)):
-#             for i in range(len(pose_idx[b])):
-#                 seq = pose_idx[b,i,0].item()
-#                 m = seq_max[seq] if seq in seq_max else 0
-#                 seq_max[seq] = max(pose_idx[b,i,1].item(), m)
-    
-#     # Separate into src_1 and src_2 poses
-#     seq_poses_1 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
-#     seq_poses_2 = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
-#     seq_gt = {s:torch.zeros((m+1,12)) for s,m in seq_max.items()}
-
-#     pose_net.eval()
-#     with torch.no_grad():
-#         for i, (target, src, _, pose_gt) in enumerate(data_loader):
-#             target = target.to(device)
-#             src = src.to(device)
-#             pose_gt, pose_idx = pose_gt
-#             pose_gt = pose_gt.to(device)
-#             pose_idx = pose_idx.to(device)
-            
-#             # Predict pose
-#             pose, _ = pose_net(target, src)
-
-#             # Euler to rotation matrix [R|t] to match gt
-#             pose_src1 = get_pose_mat(pose[:,:1]).view(-1,12)
-#             pose_src2 = get_pose_mat(pose[:,1:]).view(-1,12)
-
-#             for i in range(len(pose_idx)):
-#                 # seq consistent for both source views
-#                 seq = pose_idx[i,0,0].item()
-#                 seq_poses_1[seq][pose_idx[i,0,1]] = pose_src1[i]
-#                 seq_poses_2[seq][pose_idx[i,2,1]] = pose_src2[i]
-
-#                 # TODO: Multiply seq_poses_2 by target
-
-#                 seq_gt[seq][pose_idx[i,0,1]] = pose_gt[i,0].view(12)
-#                 seq_gt[seq][pose_idx[i,2,1]] = pose_gt[i,2].view(12)
-
-#     torch.save(seq_poses_1, os.path.join(args.save_path, args.job_id, f'pose_preds-1.pt'))
-#     torch.save(seq_poses_2, os.path.join(args.save_path, args.job_id, f'pose_preds-2.pt'))  
-
-#     # Convert each pose to global (only applied to src 2 for now)
-#     for seq, poses in seq_poses_2.items():
-#         errors = []
-#         # Start from third frame with src2 so insert in gt pose for 
-#         # frames 0 and 1 to get global pose
-#         poses[:2] = seq_gt[seq][:2]
-
-#         for i, pose in enumerate(poses):
-#             if i < 2: continue
-
-#             # poses[:,:,-1] -= pose_src1[:,-1]
-#             # poses = torch.linalg.inv(pose_src1[:,:3]) @ poses
-
-
-#             # Extract 
-#             # t, R = pose.view(3,4)[:,-1:], pose.view(3,4)[:,:-1]
-#             pose_curr = torch.cat([
-#                 pose.view(3,4), torch.tensor([[0,0,0,1]], device=device)
-#                 ], axis=0)
-#             pose_prev = torch.cat([
-#                 poses[i-1].view(3,4), torch.tensor([[0,0,0,1]])
-#                 ], axis=0)
-#             # t_prev, R_prev = pose_prev[:,-1:], pose_prev[:,:-1]
-            
-#             # t = (t_prev + (R_prev @ t)).squeeze(-1)
-#             # R = R_prev @ R
-
-#             pose_curr = pose_prev @ torch.linalg.inv(pose_curr)
-#             R, t = pose_curr[:-1,:-1], pose_curr[:-1,-1]
-
-#             # Optimize scale
-#             t_gt = seq_gt[seq][i].view(3,4)[:,-1]
-#             scale = torch.sum(t_gt * t)/torch.sum(t ** 2)
-#             t *= scale
-#             print(scale, t, t_gt)
-
-#             poses[i] = torch.cat([R, t.unsqueeze(-1)], dim=-1).view(12)
-
-#             errors.append(torch.linalg.norm(t - t_gt))
-#             if i == 20:
-#                 break
-
-#         # Output sequence MSE
-#         seq_mse = torch.mean(torch.tensor(errors))
-#         logger.log_str(f'Seq {seq}: MSE {seq_mse.item()}')
-        
-
-#     # print(seq_poses_2[10][:3])
-#     # print(seq_poses_2[10][-3:])
 
 def compute_multi_scale_loss(target: torch.Tensor, 
                              src: torch.Tensor, 
@@ -225,10 +130,9 @@ def compute_multi_scale_loss(target: torch.Tensor,
                              pose: torch.Tensor, 
                              exp: torch.Tensor, 
                              cam: torch.Tensor):
-    n_scales = 4
     h, w = target.shape[2], target.shape[3]
     loss = 0.
-    for s in range(n_scales):
+    for s in range(args.n_scales):
         # Reshape target and src_images to correct scale
         target_s = TF.resize(target, (h//(2**s), w//(2**s)))
         src_s = TF.resize(src, (h//(2**s), w//(2**s)))
@@ -287,60 +191,21 @@ def compute_single_scale_loss(target: torch.Tensor,
     view_synth_loss = nn.L1Loss(reduction='none')
     l_vs = 0.
     for i in range(src.shape[1]):
+        
         proj = project_warp(src[:,i:i+1], depth, pose[:,i:i+1], cam)
-        l_vsi = view_synth_loss(proj, target) 
+        l_vsi = view_synth_loss(proj, target)
+
         if lambda_e > 0.:
             # Apply explainability mask to view synthesis loss
             l_vs += torch.mean(exp[:,i:i+1]*l_vsi) 
         else:
             l_vs += torch.mean(l_vsi)
 
-    # proj_1 = project_warp(src[:,:1], depth, pose[:,:1], cam)
-    # proj_2 = project_warp(src[:,1:], depth, pose[:,1:], cam)
-    # l_vs1 = view_synth_loss(proj_1, target) 
-    # l_vs2 = view_synth_loss(proj_2, target)
-    # if args.lambda_e > 0.:
-    #     # Apply explainability mask to view synthesis loss
-    #     l_vs = torch.mean(exp[:,:1]*l_vs1) + torch.mean(exp[:,1:]*l_vs2)
-    # else:
-    #     l_vs = torch.mean(l_vs1) + torch.mean(l_vs2)
-
     return l_vs + lambda_s * l_s + lambda_e * l_e
 
-def compute_pose_metrics(pose_pred: torch.Tensor, pose_gt: torch.Tensor):
-    '''
-      Returns the pose translation MSE as relative translation from 
-      Target->Src (target origin). 
-
-    Args:
-        pose_pred: 6DOF pose prediction per source view (B,n_src,6) 
-                    (tx, ty, tz, alpha, beta, gamma)
-        pose_gt: Ground truth pose matrix [R|t] (B,n_src,3,4)
-    '''
-    # Euler to rotation matrix [R|t] to match gt
-    pose_preds = [get_pose_mat(pose_pred[:,i:i+1]) \
-                  for i in range(pose_pred.shape[1])]
-    pose_preds = torch.stack(pose_preds, dim=1)
-
-    # pose_pred_src1 = get_pose_mat(pose_pred[:,:1])
-    # pose_pred_src2 = get_pose_mat(pose_pred[:,1:])
-    # pose_pred = torch.stack([pose_pred_src1, pose_pred_src2], dim=1)
-
-    # B,n_src,3,4 -> B*n_src,3,4 
-    pose_preds = pose_preds.view(-1, 3, 4) 
-    pose_gt = pose_gt.view(-1, 3, 4)
-
-    # Translation mse
-    scale = torch.sum(pose_gt[:,:,-1] * pose_preds[:,:,-1], dim=1)
-    scale /= torch.sum(pose_preds[:,:,-1] ** 2, dim=1)
-    scale = scale.unsqueeze(1)
-    alignment_error = pose_preds[:,:,-1] * scale - pose_gt[:,:,-1]
-    mse = torch.sum(alignment_error ** 2)/len(pose_preds)
-    return mse
-
-def compute_sequence_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
+def compute_snippet_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
     ''' 
-    Returns the ATE of the sequence given the predicted pose (target origin) and 
+    Returns the ATE of the snippet given the predicted pose (target origin) and 
     gt pose (src1 origin). Does this by converting the pose predictions from target 
     origin (src1<-target->src2) to src1 origin (src1->target->src2). Uses the pose_gt 
     to gather the scaling factor and compute final ATE.
@@ -360,7 +225,6 @@ def compute_sequence_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
         samp_ATE = torch.linalg.norm((pose_gt[i,:,:,-1] - scale * poses[:,:,:,-1]).reshape(-1)) 
         samp_ATE /= seq_len
         ATE += samp_ATE
-    print(ATE / pose_gt.shape[0])
     return ATE / pose_gt.shape[0]
 
 
@@ -377,7 +241,7 @@ def get_params(model:nn.Module, weight_decay=0.05):
 
 
 def main():
-    log_job_id = args.job_id if not args.evaluate else f'{args.job_id}-test_src1origin'
+    log_job_id = args.job_id if not args.evaluate else f'{args.job_id}-test'
     logger = MetricLogger(
         args.save_path, log_job_id, args.batch_size, args.epochs
         )
@@ -386,13 +250,13 @@ def main():
     # Load pretrained model and test
     if args.evaluate:
         test_loader = get_test_data_loader(
-            args.data_path, args.data_path_local, args.batch_size, args.n_src, args.n_workers
+            args.data_path, args.data_path_local, args.n_src, args.n_workers
         )
-        # path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
-        # assert os.path.exists(path), f'Bad checkpoint path: {path}'
+        path = os.path.join(args.save_path, args.job_id, 'checkpoint.pth.tar')
+        assert os.path.exists(path), f'Bad checkpoint path: {path}'
 
         pose_net = PoseCNN(args.lambda_e > 0., args.n_src)
-        # pose_net.load_state_dict(torch.load(path, map_location=device))
+        pose_net.load_state_dict(torch.load(path, map_location=device))
         pose_net.drop_exp()
         pose_net.to(device)
 

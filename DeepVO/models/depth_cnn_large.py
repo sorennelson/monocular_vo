@@ -5,7 +5,7 @@ import torchvision.transforms.functional as TF
 
 
 class DepthCNN(nn.Module):
-    
+
     def __init__(self, skip=False, alpha=10, beta=0.01):
         super().__init__()
 
@@ -81,11 +81,11 @@ class EncoderBlock(nn.Module):
         self.block = nn.Sequential(OrderedDict([
             ('conv1', nn.Conv2d(in_channels, out_channels, kernel_size, 
                                 2, padding=(kernel_size[0]-1)//2)),
-            ('norm1', nn.BatchNorm2d(out_channels)),
+            # ('norm1', nn.BatchNorm2d(out_channels)),
             ('relu1', nn.ReLU(inplace=True)),
             ('conv2', nn.Conv2d(out_channels, out_channels, kernel_size, 
                                 1, padding=(kernel_size[0]-1)//2)),
-            ('norm2', nn.BatchNorm2d(out_channels)),
+            # ('norm2', nn.BatchNorm2d(out_channels)),
             ('relu2', nn.ReLU(inplace=True))
         ]))
 
@@ -100,14 +100,13 @@ class DecoderBlock(nn.Module):
         self.conv_transpose = nn.Sequential(OrderedDict([
             ('conv', nn.ConvTranspose2d(in_channels, out_channels, kernel_size, 
                                         stride=2, padding=1, output_padding=1)),
-            ('norm', nn.BatchNorm2d(out_channels)),
+            # ('norm', nn.BatchNorm2d(out_channels)),
             ('relu', nn.ReLU(inplace=True))
         ]))
         channels = out_channels if not skip else int_channels
-        # padding = 0 if not pad else 1
         self.conv = nn.Sequential(OrderedDict([
             ('conv', nn.Conv2d(channels, out_channels, kernel_size, 1, padding=1)),
-            ('norm', nn.BatchNorm2d(out_channels)),
+            # ('norm', nn.BatchNorm2d(out_channels)),
             ('relu', nn.ReLU(inplace=True))
         ]))
 
