@@ -2,12 +2,22 @@ import numpy as np
 import cv2
 from PIL import Image
 from streaming import MDSWriter
-import os
+import os, argparse
 
 # Local or remote directory in which to store the compressed output files
-train_dir = '../kitti_vo_streaming_pose/train'
-val_dir = '../kitti_vo_streaming_pose/val'
-in_dir = '../kitti_vo_pose'
+# train_dir = '../kitti_vo_streaming_pose_4src/train'
+# val_dir = '../kitti_vo_streaming_pose_4src/val'
+# test_dir = '../kitti_vo_streaming_pose_4src/test'
+# in_dir = '../kitti_vo_pose_4src'
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dataset_dir", type=str, required=True, 
+                    help="Where the dataset is stored (dump_root from prepare_[split]_data.py)")
+parser.add_argument("--split", type=str, required=True, choices=["train", "val", "test"])
+parser.add_argument("--dump_root", type=str, required=True, 
+                    help="Local or remote directory in which to store the compressed output files.")
+args = parser.parse_args()
+
 
 # A dictionary mapping input fields to their data types
 columns = {
@@ -53,8 +63,13 @@ def write_dataset(dataset, out_dir) -> None:
             }
             out.write(sample)
 
-train_ds = format_file_list(in_dir, 'train')
-# val_ds = format_file_list(in_dir, 'val')
+ds = format_file_list(args.dataset_dir, args.split)
+write_dataset(ds, os.path.join(args.dump_root, args.split))
 
-write_dataset(train_ds, train_dir)
+# # train_ds = format_file_list(in_dir, 'train')
+# val_ds = format_file_list(in_dir, 'val')
+# # test_ds = format_file_list(in_dir, 'test')
+
+# # write_dataset(train_ds, train_dir)
 # write_dataset(val_ds, val_dir)
+# # write_dataset(test_ds, test_dir)
