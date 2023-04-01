@@ -24,7 +24,7 @@ class kitti_odom_loader(object):
         self.test_frames = []
         for seq in self.test_seqs:
             seq_dir = os.path.join(self.dataset_dir, 'sequences', '%.2d' % seq)
-            img_dir = os.path.join(seq_dir, 'image_1')
+            img_dir = os.path.join(seq_dir, 'image_0')
             N = len(glob(img_dir + '/*.png'))
             for n in range(N):
                 self.test_frames.append('%.2d %.6d' % (seq, n))
@@ -46,7 +46,7 @@ class kitti_odom_loader(object):
         self.train_frames = []
         for seq in self.train_seqs:
             seq_dir = os.path.join(self.dataset_dir, 'sequences', '%.2d' % seq)
-            img_dir = os.path.join(seq_dir, 'image_1')
+            img_dir = os.path.join(seq_dir, 'image_0')
             N = len(glob(img_dir + '/*.png'))
             for n in range(N):
                 self.train_frames.append('%.2d %.6d' % (seq, n))
@@ -125,7 +125,7 @@ class kitti_odom_loader(object):
         return example
 
     def load_image(self, drive, frame_id):
-        img_file = os.path.join(self.dataset_dir, 'sequences', '%s/image_1/%s.png' % (drive, frame_id))
+        img_file = os.path.join(self.dataset_dir, 'sequences', '%s/image_0/%s.png' % (drive, frame_id))
         img = cv2.imread(img_file, 0)
         return img
 
@@ -135,7 +135,7 @@ class kitti_odom_loader(object):
         intrinsics = proj_c2p[:3, :3]
         return intrinsics
 
-    def read_calib_file(self, filepath, cid=2):
+    def read_calib_file(self, filepath, cid=0):
         """Read in a calibration file and parse into a dictionary."""
         with open(filepath, 'r') as f:
             C = f.readlines()
