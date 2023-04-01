@@ -1,9 +1,9 @@
 from dataset import get_training_data_loaders, get_test_data_loader
 from models.depth_cnn_large import DepthCNN
 from models.pose_cnn_large import PoseCNN
-from utils import MetricLogger, compute_smooth_loss, project_warp, get_pose_mat, get_src1_origin_pose, inverse_warp
+from utils import MetricLogger, compute_smooth_loss, projective_inverse_warp, get_src1_origin_pose
 
-import os, argparse
+import os, time, argparse
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
@@ -13,7 +13,7 @@ parser = argparse.ArgumentParser()
 # Input
 parser.add_argument('--data_path', type=str, 
                     help='Remote/local path where full dataset is persistently stored.')
-parser.add_argument('--data_path_local', type=str, default='/tmp/kitti_vo_pose',
+parser.add_argument('--data_path_local', type=str, default='/tmp/kitti_vo',
                     help='Local working dir where dataset is cached during operation.')
 # Output
 parser.add_argument('--job_id', type=str, help='Job identifier.')
@@ -24,17 +24,17 @@ parser.add_argument('--log_frequency', type=int, default=250,
 # Hyperparameters
 parser.add_argument('--skip', action='store_true', 
                     help='Whether to use skip connections in Depth network.')
-parser.add_argument('--lambda_s', type=float, default=0.5, help='Smooth loss scalar.')
+parser.add_argument('--lambda_s', type=float, default=0.1, help='Smooth loss scalar.')
 parser.add_argument('--smooth_disp', action='store_true', 
                     help='If true applies smoothness loss to the disparity, otherwise to the depth.')
-parser.add_argument('--lambda_e', type=float, default=0.2, help='Explainability loss scalar.')
+parser.add_argument('--lambda_e', type=float, default=0.0, help='Explainability loss scalar.')
 parser.add_argument('--learning_rate', type=float, default=0.0002, help='Learning rate.')
-parser.add_argument('--decay', type=float, default=0.05, help='Weight decay.')
-parser.add_argument('--epochs', type=int, default=10, help='Training epochs.')
-parser.add_argument('--batch_size', type=int, default=32, help='Batch size.')
+parser.add_argument('--decay', type=float, default=0., help='Weight decay.')
+parser.add_argument('--epochs', type=int, default=25, help='Training epochs.')
+parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
 parser.add_argument('--n_src', type=int, default=2, help='Number of source images.')
-parser.add_argument('--n_scales', type=int, default=4, 
-                    help='Number of image scales to use when training.')
+parser.add_argument('--n_scales', type=int, default=1, 
+                    help='Number of image scales to use when training in range [1,4].')
 
 parser.add_argument('--evaluate', action='store_true', 
                     help='Evaluate the pretrained model stored in save_path on the test set.')
@@ -43,8 +43,6 @@ parser.add_argument('--n_workers', type=int, default=1, help='Number of workers.
 args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# TODO: move args to Odometry
-# TODO: README
 
 def train(data_loader:DataLoader, 
           depth_net:nn.Module, 
@@ -65,14 +63,12 @@ def train(data_loader:DataLoader,
         pose, exp = pose_net(target, src)
 
         loss = compute_multi_scale_loss(target, src, disp, pose, exp, cam)
-        with torch.no_grad():
-            pose_dist = compute_snippet_ATE(pose, pose_gt)
 
         opt.zero_grad()
         loss.backward()
         opt.step()
 
-        logger.update(len(target), loss.item(), pose_dist)
+        logger.update(len(target), loss.item(), 0.)
         if (i+1)%args.log_frequency == 0:
             logger.log_stats()
 
@@ -192,8 +188,8 @@ def compute_single_scale_loss(target: torch.Tensor,
     l_vs = 0.
     for i in range(src.shape[1]):
         
-        proj = project_warp(src[:,i:i+1], depth, pose[:,i:i+1], cam)
-        l_vsi = view_synth_loss(proj, target)
+        proj, mask = projective_inverse_warp(src[:,i:i+1], depth, pose[:,i:i+1], cam)
+        l_vsi = view_synth_loss(proj, target) * mask.unsqueeze(1)
 
         if lambda_e > 0.:
             # Apply explainability mask to view synthesis loss
@@ -202,6 +198,7 @@ def compute_single_scale_loss(target: torch.Tensor,
             l_vs += torch.mean(l_vsi)
 
     return l_vs + lambda_s * l_s + lambda_e * l_e
+
 
 def compute_snippet_ATE(pose: torch.Tensor, pose_gt: torch.Tensor):
     ''' 
@@ -261,7 +258,11 @@ def main():
         pose_net.to(device)
 
         logger.start_epoch(0)
+
+        start = time.time()
         validate_pose(test_loader, pose_net, logger)
+        logger.log_str(f'Eval time: {time.time()-start}s')
+
         return
     
     # Load dataloader

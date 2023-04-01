@@ -42,9 +42,8 @@ class MetricLogger:
         self.log.write(
             f'..... Epoch {self.epoch}/{self.epochs}, ' +
             f'iter: {self.n_examples // self.batch_size}, ' +
-            f'time: {int((time.time() - self.start) // 60)}, ' +
-            f'loss: {self.loss/self.n_examples:.3f}, ' +
-            f'ATE: {self.pose_dist/self.n_examples:.3f}\n')
+            f'time: {int((time.time() - self.start) // 60)}M, ' +
+            f'loss: {self.loss/self.n_examples:.3f}\n')
         self.log.flush()
     
     def log_epoch_stats(self, train:bool):
@@ -56,15 +55,14 @@ class MetricLogger:
             self.log.write(
                 f'==> Epoch {self.epoch}/{self.epochs}, ' +
                 f'iters: {self.n_examples // self.batch_size}, ' +
-                f'time: {int(epoch_time // 60)}, ' +
-                f'est time remaining: {int(rem_hours)}H {int(rem_minutes)}M  --- ' +
-                f'avg train loss: {self.loss/self.n_examples:.3f}, ' +
-                f'avg train ATE: {self.pose_dist/self.n_examples:.3f}\n')
+                f'time: {int(epoch_time // 60)}M, ' +
+                f'est time remaining: {int(rem_hours)}H {int(rem_minutes)}M, ' +
+                f'avg train loss: {self.loss/self.n_examples:.3f}\n')
         else:
             self.log.write(
-                f'==> Validation --- ' +
+                f'==> Validation  ' +
                 f'avg val loss: {self.loss/self.n_examples:.3f}, ' +
-                f'avg val ATE: {self.pose_dist/self.n_examples:.3f}\n\n')
+                f'avg val ATE: {self.pose_dist/self.n_examples:.4f}\n\n')
         self.log.flush()
 
 
@@ -138,8 +136,6 @@ def get_pose_mat(pose_6dof):
     cos_a, sin_a = torch.cos(alpha), torch.sin(alpha)
     cos_b, sin_b = torch.cos(beta), torch.sin(beta)
     cos_g, sin_g = torch.cos(gamma), torch.sin(gamma)
-    # zeros = torch.zeros((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
-    # ones = torch.ones((pose_6dof.shape[0],1,1,1), device=pose_6dof.device)
 
     # Compute yaw, pitch, and roll
     R_z = torch.cat([
@@ -187,7 +183,7 @@ def get_p_t(img: torch.Tensor):
 
 def bilinear_sampling(src, p_s):
     ''' Returns a new image by bilinear sampling values from src 
-    with indices from p_s. 
+    with indices from p_s, and a mask where p_s coords are out of frame. 
     
     Args:
         src: Batch images for single source view (B,1,H_s,W_s)
@@ -201,7 +197,9 @@ def bilinear_sampling(src, p_s):
     pred = nn.functional.grid_sample(
         src, p_s.permute(0,2,3,1), align_corners=True
         )
-    return pred
+    mask = p_s.abs().max(dim=1)[0] <= 1.
+
+    return pred, mask
 
 def compute_smooth_loss(depth:torch.Tensor, loss:nn.L1Loss):
     ''' L1 of second order gradients of depth map. 
@@ -231,29 +229,28 @@ def get_src1_origin_pose(pose: torch.Tensor):
     Args:
         pose: predicted 6DOF pose with target origin (B,n_src,6)
     Returns:
-        predicted matrix pose with src1 origin (B,n_src,3,4)
+        predicted matrix pose with src1 origin (B,n_src+1,3,4)
     '''
-    device = pose_src1.device
-    B = pose_src1.shape[0]
+    device = pose.device
+    B = pose.shape[0]
     
     # Euler to rotation matrices [R|t]
-    pose_src1 = get_pose_mat(pose[:,:1])
-    pose_src2 = get_pose_mat(pose[:,1:])
+    pose_src = [torch.cat([get_pose_mat(pose[:,i:i+1]), 
+                            get_pose_pad(B, device)], dim=1) \
+                for i in range(pose.shape[1])]
     # Origin pose
-    pose_target = torch.eye(4, device=pose.device)[:-1].unsqueeze(0)
+    pose_target = torch.eye(4, device=pose.device).unsqueeze(0)
     pose_target = pose_target.repeat(pose.shape[0],1,1)
 
-    # (B,3,4,4)
-    poses = torch.stack([
-        torch.cat([pose_src1, get_pose_pad(B, device)], dim=1),
-        torch.cat([pose_target, get_pose_pad(B, device)], dim=1),
-        torch.cat([pose_src2, get_pose_pad(B, device)], dim=1)
+    # (B,n_src+1,4,4)
+    target_origin_pose = torch.stack([
+        *pose_src[:len(pose_src)//2], 
+        pose_target,
+        *pose_src[len(pose_src)//2:], 
         ], dim=1)
     
     # (B,1,4,4)
-    src1_pose = torch.cat([
-        pose_src1, get_pose_pad(B, device)
-        ], dim=1).unsqueeze(1)
+    src1_pose = pose_src[0].unsqueeze(1)
 
-    src1_origin_pose = (src1_pose @ torch.linalg.inv(poses))[:,:,:-1]
+    src1_origin_pose = (src1_pose @ torch.linalg.inv(target_origin_pose))[:,:,:-1]
     return src1_origin_pose

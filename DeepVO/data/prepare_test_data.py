@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dataset_dir", type=str, required=True, help="where the dataset is stored")
 parser.add_argument("--dataset_name", type=str, required=True, choices=["kitti_odom"])
 parser.add_argument("--dump_root", type=str, required=True, help="Where to dump the data")
-parser.add_argument("--seq_length", type=int, required=True, help="Length of each training sequence")
+parser.add_argument("--seq_length", type=int, required=True, help="Length of each testing sequence")
 parser.add_argument("--img_height", type=int, default=128, help="image height")
 parser.add_argument("--img_width", type=int, default=416, help="image width")
 parser.add_argument("--num_threads", type=int, default=4, help="number of threads to use")
@@ -28,8 +28,8 @@ def concat_image_seq(seq):
 
 def dump_example(n, args):
     if n % 2000 == 0:
-        print('Progress %d/%d....' % (n, data_loader.num_train))
-    example = data_loader.get_train_example_with_idx(n)
+        print('Progress %d/%d....' % (n, data_loader.num_test))
+    example = data_loader.get_test_example_with_idx(n)
 
     if example == False:
         return
@@ -79,23 +79,17 @@ def main():
                                         img_width=args.img_width,
                                         seq_length=args.seq_length)
 
-    Parallel(n_jobs=args.num_threads)(delayed(dump_example)(n, args) for n in range(data_loader.num_train))
+    Parallel(n_jobs=args.num_threads)(delayed(dump_example)(n, args) for n in range(data_loader.num_test))
 
-    # Split into train/val
-    np.random.seed(8964)
     subfolders = os.listdir(args.dump_root)
-    with open(args.dump_root + 'train.txt', 'w') as tf:
-        with open(args.dump_root + 'val.txt', 'w') as vf:
-            for s in subfolders:
-                if not os.path.isdir(args.dump_root + '/%s' % s):
-                    continue
-                imfiles = glob(os.path.join(args.dump_root, s, '*.jpg'))
-                frame_ids = [os.path.basename(fi).split('.')[0] for fi in imfiles]
-                for frame in frame_ids:
-                    if np.random.random() < 0.1:
-                        vf.write('%s %s\n' % (s, frame))
-                    else:
-                        tf.write('%s %s\n' % (s, frame))
+    with open(args.dump_root + 'test.txt', 'w') as tf:
+        for s in ['09', '10']:
+            if not os.path.isdir(args.dump_root + '/%s' % s):
+                continue
+            imfiles = glob(os.path.join(args.dump_root, s, '*.jpg'))
+            frame_ids = [os.path.basename(fi).split('.')[0] for fi in imfiles]
+            for frame in frame_ids:
+                tf.write('%s %s\n' % (s, frame))
 
 main()
 
