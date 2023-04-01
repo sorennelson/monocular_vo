@@ -40,8 +40,6 @@ def dump_example(n, args):
     cx = intrinsics[0, 2]
     cy = intrinsics[1, 2]
     dump_dir = os.path.join(args.dump_root, example['folder_name'])
-    # if not os.path.isdir(dump_dir):
-    #     os.makedirs(dump_dir, exist_ok=True)
     try: 
         os.makedirs(dump_dir)
     except OSError:
