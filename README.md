@@ -62,7 +62,7 @@ python classical_odometry --version opencv --seq_path path/to/kitti/sequence pos
 
 ## Results
 
-Average Absolute Trajectory Error (ATE) on the KITTI Odometry split (sequences 09-10) averaged over 3 runs. Training is done on sequences 00-08. For a fair timing comparison, inference for all methods is run on my 2019 16" MacBook Pro (2.6 GHz 6-Core i7).
+Average Absolute Trajectory Error (ATE) on the KITTI Odometry split (sequences 09-10) averaged over 3 runs. All models are trained on sequences 00-08. For a fair timing comparison, inference for all methods is run on my 2019 16" MacBook Pro (2.6 GHz 6-Core i7).
 
 Method | ATE (3 frame)
 --- | --- 
