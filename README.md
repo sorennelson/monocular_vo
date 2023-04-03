@@ -1,4 +1,4 @@
-# Monocular Visual Odometry
+# Monocular VO
 
 > A comparison of Unsupervised Deep Learning and Classical Geometric methods for monocular ego-motion estimation on KITTI Odometry.
 
