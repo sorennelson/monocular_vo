@@ -40,24 +40,24 @@ python main.py --data_path path/to/streaming/ds --job_id [job_id] --epochs 25 --
 ```
 
 
-## Classical Geometric
+## Classical
 
 ### Manual
 
-A manual baseline implementation of classical geometric VO (using OpenCV only for feature extraction). I first match the 300 closest keypoints across image pairs using ORB features. I then estimate the Essential matrix with Normalized 8-point algorithm and Ransac, and finally extract the relative pose with the highest cheirality.
+A manual baseline implementation of classical VO (using OpenCV only for feature extraction). I first match the 300 closest keypoints across image pairs using ORB features. I then estimate the Essential matrix with Normalized 8-point algorithm and Ransac, and finally extract the pose with the highest cheirality.
 
 **Running:**
 ```
-python classical_odometry --version manual --seq_path path/to/kitti/sequence pose_txt_path path/to/kitti/seq/pose.txt
+python classical_vo.py --version manual --seq_path path/to/kitti/sequence pose_txt_path path/to/kitti/seq/pose.txt
 ```
 
 ### OpenCV
 
-A fully OpenCV implementation of classical geometric VO. I track features using FAST feature detector and Lucas Kanade, re-estimating new features if < 2000 keypoints remain in the current frame. I then estimate the Essential matrix with Nister's 5-Point and Ransac, and finally extract the pose.
+A fully OpenCV implementation of classical VO. I track features using FAST feature detector and Lucas Kanade, re-estimating new features if < 2000 keypoints remain in the current frame. I then estimate the Essential matrix with Nister's 5-Point and Ransac, and finally extract the pose.
 
 **Running:** 
 ```
-python classical_odometry --version opencv --seq_path path/to/kitti/sequence pose_txt_path path/to/kitti/seq/pose.txt
+python classical_vo.py --version opencv --seq_path path/to/kitti/sequence pose_txt_path path/to/kitti/seq/pose.txt
 ```
 
 ## Results
@@ -73,8 +73,8 @@ SfMLearner (Single-Scale) | 0.0084
 
 Method | ATE (5 frame) | ATE (3 frame) | Total Inference Time (Seconds)
 --- | --- | --- | --- 
-Manual (8-Point) | 0.0237 | 0.0144 | 796
-OpenCV (Nister's 5-Point) | 0.0139 | 0.0090 | 931 
+Manual (ORB + 8-Point) | 0.1612 | 0.1186 | 796
+OpenCV (FAST + LK + Nister's 5-Point) | 0.0464 | 0.0357 | 931 
 SfMLearner | 0.0158 | 0.0084 | 32
 
 

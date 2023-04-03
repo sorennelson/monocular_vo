@@ -352,9 +352,7 @@ class ClassicalVO:
         Returns the average ATE across all 3/5-frame snippets (to match SfMLearner)
         '''
         def convert_to_pose0_origin(pose):
-            pose[:,:-1,-1] -= pose[0,:-1,-1]
-            pose = np.linalg.inv(pose[0,:-1,:3]) @ pose[:,:-1]
-            return pose
+            return np.linalg.inv(pose[0]) @ pose
         
         def compute_snippet_ATE(gt, pred):
             scale = np.sum(gt[:,:-1,-1] * pred[:,:-1,-1]) / np.sum(pred[:,:-1,-1] ** 2)
@@ -402,7 +400,7 @@ class ClassicalVO:
 
     def run_opencv(self):
         '''
-        Estimates ego-motion using OpenCV. Tracks features with Lucas Kanade 
+        Estimates ego-motion using OpenCV. Tracks features with FAST and Lucas Kanade 
         and re-estimates new features if < 2000 keypoints remain in frame. Estimates
         the Essential matrix with Nister's 5-Point and Ransac then extracts the relative 
         pose and converts to global.
